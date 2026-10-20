@@ -39,3 +39,30 @@ Physical-phone operation, real external notification delivery, a fresh public-im
 ## Recorded outcome
 
 All five findings were resolved with no introduced material regression observed in the inspected behavior. Computed browser values confirm ground `rgb(244, 245, 247)` and DM Serif Display headings at weight 400. The observations in this review use synthetic records and retain the evidence limits stated above.
+
+
+## Version 0.1.1 live-use corrections
+
+The added browser checks cover single and selected-item hide/restore, review
+thumbnail privacy, full-search scope and count/filter recovery, direct product
+links, read-only details including missing ETV and hostile text, tracker help,
+validation, draft retention, and saved-identity confirmation. The independent
+review found a save/navigation race: leaving and returning during an in-flight
+create could enable a second submission. A request lock now survives view changes;
+separate served-browser checks exercised both delayed success and delayed failure,
+retained later edits, and verified one create followed by an update rather than
+duplicate creation.
+
+Independent backend review corrected cancellation racing the final scan commit,
+which could discard captured pages, and aligned the Amazon review-source filter
+with section-specific provenance. Help topics were checked against actual matching,
+freshness, baseline and scheduling behavior. The original operator report of a
+cleared form with a missing tracker was not reproduced; no unsupported cause is
+attributed to it.
+
+A single synthetic capture round checked 39 populated and interrupted states at
+360, 390, 768 and 1440 pixels, including Help, trackers, details, reviews, discovery
+and settings. It reported no horizontal overflow or browser errors. Root visual
+inspection confirmed readable phone help, the phone details dialog and desktop
+review thumbnails. These are synthetic Chromium captures, not physical-phone or
+actual Amazon evidence.

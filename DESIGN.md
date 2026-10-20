@@ -180,3 +180,24 @@ Coverage text names the recent source scopes and distinguishes mixed historical 
 - Don't substitute charts, marketing headlines or decorative metrics for discovery content.
 - Don't use bold DM Serif Display, rounded pill containers or cream backgrounds.
 - Don't use color alone for status, return stored secrets into forms, or call history results live inventory.
+
+## Live-use additions
+
+Product cards separate Open product from See details. The latter uses a native
+read-only dialog with queued, running, observed and unavailable states; an unknown
+ETV remains explicitly unavailable. Selection checkboxes and a selected-item
+ toolbar support hide/restore on the displayed page. Review rows include thumbnails
+under the same image policy and retain separate observed status and local progress.
+
+Help has directly addressable topics for discovery, trackers, literal matching,
+scoring, schedules, notifications, connection, reviews, visibility and recovery.
+Contextual links open help separately to preserve an active form. The tracker
+editor brings invalid fields into view, keeps drafts while moving between app
+views, and confirms the saved identity in a fresh list read before announcing
+success. A pending confirmation retains entries and offers a list refresh rather
+than another create request.
+
+Discovery labels queue refresh and query search separately. Search help states
+that both manual and scheduled searches traverse all exposed result pages; queue
+and review bounds are described only where they apply. Live-result counts separate
+captured inventory from the current filtered view, with a direct filter reset.

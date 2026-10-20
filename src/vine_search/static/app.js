@@ -32,6 +32,11 @@
     settings: {},
     connection: { state: "disconnected" },
     trackers: [],
+    trackerDrafts: {},
+    trackerEditorId: "new",
+    trackerSaveRequests: {},
+    pendingTrackerSaves: {},
+    trackerSaveMessages: {},
     route: "discover",
     mode: "history",
     query: "",
@@ -40,6 +45,8 @@
     sort: "rank",
     minScore: "",
     freshness: "",
+    productVisibility: "visible",
+    reviewVisibility: "visible",
     offset: 0,
     limit: 24,
     reviewOffset: 0,
@@ -48,6 +55,7 @@
     jobs: [],
     liveJob: null,
     login: null,
+    details: null,
     viewEpoch: 0,
     reviewFilters: {
       query: "",
@@ -61,6 +69,8 @@
   };
   let pollTimer,
     toastTimer,
+    productRequest = 0,
+    reviewRequest = 0,
     pollBusy = false;
   function toast(message, error = false) {
     const node = $("#toast");
@@ -135,7 +145,8 @@
       amazon: "Amazon",
       import: "Imported",
       manual: "Manual",
-    })[value] || pretty(value);
+    })[value] ||
+    (String(value).startsWith("amazon:") ? "Amazon" : pretty(value));
   function safeAmazon(value) {
     try {
       const url = new URL(value);
@@ -169,8 +180,33 @@
     safeAmazon(url)
       ? `<a class="${esc(cls)}" href="${esc(safeAmazon(url))}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`
       : "";
-  const statusLabel = (value) =>
-    `<span class="status-label ${esc(value)}">${esc(pretty(value))}</span>`;
+  function statusText(value, details = {}) {
+    if (
+      value === "complete" &&
+      details.kind === "details" &&
+      details.result?.state === "unavailable"
+    )
+      return "Details unavailable";
+    if (value === "truncated") {
+      const reason = details.stop_reason || details.progress?.stop_reason;
+      if (
+        reason === "page_budget" ||
+        /^Page limit reached/i.test(details.error || "")
+      )
+        return "Page limit reached";
+      if (
+        reason === "runtime_budget" ||
+        /^Time limit reached/i.test(details.error || "")
+      )
+        return "Time limit reached";
+      return details.kind === "reviews"
+        ? "Sync incomplete"
+        : "Search incomplete";
+    }
+    return value === "partial" ? "Incomplete" : pretty(value);
+  }
+  const statusLabel = (value, details = {}) =>
+    `<span class="status-label ${esc(value)}">${esc(statusText(value, details))}</span>`;
   function skeleton() {
     $("#main").innerHTML =
       '<div class="skeleton" aria-label="Loading"><div></div><div></div><div></div></div>';
@@ -199,7 +235,7 @@
   function check(name, label, value, help = "") {
     return `<label class="check-field wide"><input name="${esc(name)}" type="checkbox"${value ? " checked" : ""}><span class="label-text">${esc(label)}${help ? `<small>${esc(help)}</small>` : ""}</span></label>`;
   }
-  function errorIn(form, error) {
+  function errorIn(form, error, invalid = null) {
     let node = $(".form-error", form);
     if (!node) {
       node = document.createElement("p");
@@ -207,7 +243,44 @@
       node.setAttribute("role", "alert");
       form.append(node);
     }
-    node.textContent = error.message;
+    node.id = `${form.id || "form"}-error`;
+    node.tabIndex = -1;
+    const controls = [...form.elements].filter((control) => control.name);
+    const control =
+      invalid ||
+      controls.find((control) =>
+        new RegExp(`\\b${control.name}\\b`, "i").test(error.message),
+      );
+    const label = control?.closest("label");
+    const fieldName = label
+      ? [...label.childNodes]
+          .filter((part) => part.nodeType === Node.TEXT_NODE)
+          .map((part) => part.textContent.trim())
+          .join(" ")
+      : control?.name;
+    node.textContent =
+      control && fieldName
+        ? invalid
+          ? `${fieldName}: ${error.message}`
+          : error.message.replace(
+              new RegExp(`\\b${control.name}\\b`, "gi"),
+              fieldName,
+            )
+        : error.message;
+    if (control) {
+      let section = control.closest("details");
+      while (section) {
+        section.open = true;
+        section = section.parentElement.closest("details");
+      }
+      control.setAttribute("aria-invalid", "true");
+      control.setAttribute("aria-describedby", node.id);
+      control.scrollIntoView({ block: "center" });
+      control.focus({ preventScroll: true });
+    } else {
+      node.scrollIntoView({ block: "center" });
+      node.focus({ preventScroll: true });
+    }
   }
   async function busy(button, action) {
     if (button) button.disabled = true;
@@ -249,7 +322,7 @@
       : coverage.runs || coverage.recent_runs || [];
     if (runs.length) {
       const describe = (run) =>
-        `${sourceName(run.kind || run.source)}${run.query ? ` “${run.query}”` : ""}: ${pretty(run.status).toLowerCase()}, ${run.pages ?? "?"} page${run.pages === 1 ? "" : "s"} · ${relative(run.finished_at || run.last_seen)}`;
+        `${sourceName(run.kind || run.source)}${run.query ? ` “${run.query}”` : ""}: ${statusText(run.status, run).toLowerCase()}, ${run.observed_count ?? "?"} items from ${run.pages ?? "?"} page${run.pages === 1 ? "" : "s"} · ${relative(run.finished_at || run.last_seen)}`;
       if (singleRun)
         return `${describe(runs[0])}. Results are limited to this run's captured pages.`;
       const scopes = new Map();
@@ -304,7 +377,7 @@
         "challenge",
       ].includes(state.login.state);
     const connected = c.state === "connected";
-    panel.innerHTML = `<div class="connection-top"><div><h2 id="connection-title">${connected ? "Amazon is connected" : active ? "Sign in to Amazon" : "Connect your Amazon account"}</h2><p>${active ? "Sign in on Amazon in the dedicated browser below, including any verification Amazon requests. This window closes when Vine access is verified." : connected ? "The dedicated browser can collect products and review status. Your everyday browser can remain closed." : "Open the installation’s private browser and sign in directly on Amazon. VineSearch never asks you to type your Amazon password into this dashboard."}</p><div class="connection-details"><span>State: ${esc(pretty(c.state))}</span><span>Last successful access: ${esc(c.last_success ? date(c.last_success, { hour: "numeric", minute: "2-digit" }) : "Not yet verified")}</span>${state.login?.expires_at ? `<span>Login window expires ${esc(new Date(state.login.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}</span>` : ""}</div>${c.message ? `<p class="small">${esc(c.message)}</p>` : ""}</div><div class="actions">${active ? '<button class="button" data-action="cancel-login">Cancel login</button>' : `<button class="button primary" data-action="start-login">${connected ? "Reconnect" : "Open login browser"}</button>`}${connected ? '<button class="button" data-action="disconnect">Disconnect</button>' : ""}<button class="button subtle" data-action="close-connection">Close</button></div></div>${active && ["ready", "challenge"].includes(state.login.state) && state.login.viewer_path ? `<p class="small"><a href="${esc(viewerURL())}" target="_blank" rel="noopener">Open login browser in a separate tab</a> if the embedded view is too small.</p><iframe class="login-frame" title="Private Amazon login browser" src="${esc(viewerURL())}" allow="clipboard-read; clipboard-write"></iframe>` : active ? '<p role="status">The dedicated browser is starting. Collection waits until login finishes.</p>' : ""}`;
+    panel.innerHTML = `<div class="connection-top"><div><h2 id="connection-title">${connected ? "Amazon is connected" : active ? "Sign in to Amazon" : "Connect your Amazon account"}</h2><p>${active ? "Sign in on Amazon in the dedicated browser below, including any verification Amazon requests. This window closes when Vine access is verified." : connected ? "The dedicated browser can collect products and review status. Your everyday browser can remain closed." : "Open the installation’s private browser and sign in directly on Amazon. VineSearch never asks you to type your Amazon password into this dashboard."}</p><div class="connection-details"><span>State: ${esc(pretty(c.state))}</span><span>Last successful access: ${esc(c.last_success ? date(c.last_success, { hour: "numeric", minute: "2-digit" }) : "Not yet verified")}</span>${state.login?.expires_at ? `<span>Login window expires ${esc(new Date(state.login.expires_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}</span>` : ""}</div>${c.message ? `<p class="small">${esc(c.message)}</p>` : ""}</div><div class="actions">${active ? '<button class="button" data-action="cancel-login">Cancel login</button>' : `<button class="button primary" data-action="start-login">${connected ? "Reconnect" : "Open login browser"}</button>`}${connected ? '<button class="button" data-action="disconnect">Disconnect</button>' : ""}<button class="button subtle" data-action="close-connection">Close</button></div></div>${active && ["ready", "challenge"].includes(state.login.state) && state.login.viewer_path ? `<div class="login-viewer-controls"><a class="button primary" href="${esc(viewerURL())}" target="_blank" rel="noopener">Open full-size login browser</a><p class="small">Use the separate tab for more room, especially on a phone. Complete Amazon sign-in and any verification there, then return here to see the connection status. Keep this login session open until Vine access is verified.</p></div><iframe class="login-frame" title="Private Amazon login browser" src="${esc(viewerURL())}" allow="clipboard-read; clipboard-write"></iframe>` : active ? `<p role="status">${state.login.state === "waiting" ? "Waiting for the current collection to finish. Your login browser will open when it is ready." : "The dedicated browser is starting. The full-size login button will appear when it is ready."}</p>` : ""}`;
   }
   function viewerURL() {
     const raw = (state.login?.viewer_path || "").replace(
@@ -335,13 +408,17 @@
     return state.trackers;
   }
   async function navigate() {
-    const route = location.hash.slice(1).split("?")[0] || "discover";
+    const route =
+      location.hash.slice(1).split("?")[0] ||
+      location.pathname.replace(/^\/|\/$/g, "") ||
+      "discover";
     state.route = [
       "discover",
       "trackers",
       "reviews",
       "activity",
       "settings",
+      "help",
     ].includes(route)
       ? route
       : "discover";
@@ -361,6 +438,7 @@
         reviews: renderReviews,
         activity: renderActivity,
         settings: renderSettings,
+        help: renderHelp,
       }[state.route](epoch);
     } catch (error) {
       if (epoch === state.viewEpoch) {
@@ -381,12 +459,12 @@
     $("#main").innerHTML =
       page(
         "Discover",
-        "Find what fits. Keep a record of what you find.",
+        "Refresh your enabled For You and Available for All queues, or search Additional Items and saved history below.",
         '<button class="button" data-action="collect">' +
           icons.refresh +
-          "Collect now</button>",
+          "Refresh queues</button>",
       ) +
-      `<section class="search-area" aria-label="Product search"><div class="search-tabs" role="tablist" aria-label="Search scope"><button type="button" role="tab" data-search-mode="history" aria-selected="${state.mode === "history"}">Collected history</button><button type="button" role="tab" data-search-mode="live" aria-selected="${state.mode === "live"}">Live Amazon search</button></div><form id="search-form"><div class="search-line"><label class="search-field"><span class="screen-reader">${state.mode === "live" ? "Search the live Additional Items catalog" : "Search collected product history"}</span>${icons.search}<input name="query" type="search" placeholder="${state.mode === "live" ? "Search Additional Items on Amazon" : "Search titles in your collected history"}" value="${esc(state.query)}" maxlength="200"${state.mode === "live" ? " required" : ""}></label><button class="button primary" type="submit">${state.mode === "live" ? "Search live" : "Search"}</button></div><p class="search-hint">${state.mode === "live" ? "Queues a fresh search of Additional Items. Results are limited to the pages Amazon exposes and your collection budget." : "Searches products this installation has already observed. Live Amazon search can discover products outside this history."}</p></form></section><div id="live-job" role="status" aria-live="polite"></div><div class="discovery-layout"><aside class="filters" id="filters" aria-label="Product filters"><div class="filter-heading"><h2>Refine results</h2><button class="button subtle compact" data-action="clear-filters">Reset</button></div><div class="filter-group"><span class="filter-label">Observed in</span><div class="filter-list">${[
+      `<section class="search-area" aria-label="Product search"><div class="search-tabs" role="tablist" aria-label="Search scope"><button type="button" role="tab" data-search-mode="history" aria-selected="${state.mode === "history"}">Collected history</button><button type="button" role="tab" data-search-mode="live" aria-selected="${state.mode === "live"}">Live Amazon search</button></div><form id="search-form"><div class="search-line"><label class="search-field"><span class="screen-reader">${state.mode === "live" ? "Search the live Additional Items catalog" : "Search collected product history"}</span>${icons.search}<input name="query" type="search" placeholder="${state.mode === "live" ? "Search Additional Items on Amazon" : "Search titles in your collected history"}" value="${esc(state.query)}" maxlength="200"${state.mode === "live" ? " required" : ""}></label><button class="button primary" type="submit">${state.mode === "live" ? "Search live" : "Search"}</button></div><p class="search-hint">${state.mode === "live" ? "Searches every Additional Items page Amazon exposes for this query. You can cancel while it runs; completed pages stay saved." : "Searches products this installation has already observed. Live Amazon search can discover products outside this history."}</p></form></section><div id="live-job" role="status" aria-live="polite"></div><div class="discovery-layout"><aside class="filters" id="filters" aria-label="Product filters"><div class="filter-heading"><h2>Refine results</h2><button class="button subtle compact" data-action="clear-filters">Reset</button></div><div class="filter-group"${state.mode === "live" ? " hidden" : ""}><span class="filter-label">Observed in</span><div class="filter-list">${[
         ["", "All sources"],
         ["rfy", "For you"],
         ["afa", "Available for all"],
@@ -398,7 +476,7 @@
         )
         .join(
           "",
-        )}</div></div><div class="filter-group"><label for="tracker-filter">Interest tracker</label><select id="tracker-filter">${selectOptions([["", "All products"], ...state.trackers.map((t) => [t.id, t.name])], state.tracker)}</select></div><div class="filter-group"><label for="freshness-filter">Last observed</label><select id="freshness-filter">${selectOptions(
+        )}</div></div>${state.mode === "live" ? '<p class="filter-note">Source: Additional Items. These results belong to the selected live search.</p>' : ""}<div class="filter-group"><label for="tracker-filter">Interest tracker</label><select id="tracker-filter">${selectOptions([["", "All products"], ...state.trackers.map((t) => [t.id, t.name])], state.tracker)}</select></div><div class="filter-group"><label for="freshness-filter">Last observed</label><select id="freshness-filter">${selectOptions(
         [
           ["", "Any time"],
           ["24", "Past 24 hours"],
@@ -414,12 +492,13 @@
           ["title", "Title A–Z"],
         ],
         state.sort,
-      )}</select></label></div><div id="product-results" class="results-grid" aria-live="polite"></div><div id="product-pagination"></div><p class="coverage" id="product-coverage"></p></section></div>`;
+      )}</select></label></div><div id="product-visibility"></div><div id="product-results" class="results-grid" aria-live="polite"></div><div id="product-pagination"></div><p class="coverage" id="product-coverage"></p></section></div>`;
     $("#search-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       state.query = new FormData(event.currentTarget).get("query").trim();
       state.offset = 0;
       if (state.mode === "live") {
+        state.source = "";
         await busy(
           $('button[type="submit"]', event.currentTarget),
           async () => {
@@ -438,6 +517,8 @@
       (button) =>
         (button.onclick = () => {
           state.mode = button.dataset.searchMode;
+          state.offset = 0;
+          if (state.mode === "live") state.source = "";
           renderDiscover();
         }),
     );
@@ -467,12 +548,28 @@
     await loadProducts();
   }
   async function loadProducts() {
+    const request = ++productRequest;
+    if (state.mode === "live" && !state.liveJob) {
+      state.products = null;
+      $("#results-count").textContent = "No live search selected";
+      $("#product-visibility").innerHTML = "";
+      $("#product-results").classList.remove("results-grid");
+      $("#product-results").innerHTML = empty(
+        "Search Amazon’s Additional Items",
+        "Enter a query above to check every available result page. Find earlier searches and their saved results in Activity.",
+        '<a class="button" href="#activity">View earlier searches</a>',
+      );
+      $("#product-pagination").innerHTML = "";
+      $("#product-coverage").textContent = "";
+      return;
+    }
     const params = new URLSearchParams({
       query: state.mode === "live" && state.liveJob ? "" : state.query,
-      source: state.source,
+      source: state.mode === "live" ? "" : state.source,
       sort: state.sort,
       limit: state.limit,
       offset: state.offset,
+      visibility: state.productVisibility,
     });
     if (state.mode === "live" && state.liveJob)
       params.set("job_id", state.liveJob.id);
@@ -480,41 +577,68 @@
     if (state.minScore !== "") params.set("min_score", state.minScore);
     if (state.freshness) params.set("freshness_hours", state.freshness);
     const data = await api("/products?" + params);
+    if (request !== productRequest || state.route !== "discover") return;
     state.products = data;
+    if (state.offset && state.offset >= data.total) {
+      state.offset = Math.max(
+        0,
+        Math.floor((data.total - 1) / state.limit) * state.limit,
+      );
+      return loadProducts();
+    }
     if (state.route !== "discover" || !$("#product-results")) return;
     const products = items(data);
-    $("#results-count").innerHTML =
-      `<strong>${esc(data.total ?? products.length)}</strong> ${state.mode === "live" && state.liveJob ? "observed in this live search" : "products in history"}${state.tracker ? " · filtered by tracker" : ""}`;
+    $("#product-visibility").innerHTML = visibilityTools(
+      "products",
+      state.productVisibility,
+      products,
+    );
+    const liveScope = state.mode === "live" && !!state.liveJob;
+    const liveCount = liveScope
+      ? (state.liveJob.result?.count ?? state.liveJob.progress?.observed ?? 0)
+      : 0;
+    const liveRunning =
+      liveScope && ["queued", "running"].includes(state.liveJob.status);
+    $("#results-count").innerHTML = liveRunning
+      ? `<strong>${esc(liveCount)}</strong> items observed so far`
+      : `<strong>${esc(data.total ?? products.length)}</strong> ${liveScope ? `of ${esc(liveCount)} collected items match this view` : "products in history"}${state.tracker ? " · filtered by tracker" : ""}${state.productVisibility === "hidden" ? " · hidden" : state.productVisibility === "all" ? " · including hidden" : ""}`;
     const grid = $("#product-results");
     grid.classList.toggle("results-grid", !!products.length);
     grid.innerHTML = products.length
       ? products.map(productCard).join("")
-      : empty(
-          state.mode === "live" &&
-            state.liveJob &&
-            ["queued", "running"].includes(state.liveJob.status)
-            ? "Live search is in progress"
-            : state.query
-              ? "No observed products match"
-              : "Your discovery history starts here",
-          state.mode === "live" &&
-            state.liveJob &&
-            ["queued", "running"].includes(state.liveJob.status)
-            ? "Results will appear when this run saves its observations. The job and its progress are preserved if you leave."
-            : state.query
-              ? "Try a broader phrase, clear the filters, or search the live Additional Items catalog."
-              : "Connect Amazon, then collect your queues or run a live search. Observations and match reasons will appear here.",
-          `<button class="button" data-action="${state.connection.state === "connected" ? "collect" : "connect"}">${state.connection.state === "connected" ? "Collect products" : "Connect Amazon"}</button>`,
-        );
-    $$("img", grid).forEach((image) =>
-      image.addEventListener(
-        "error",
-        () => {
-          image.replaceWith(imageFallback());
-        },
-        { once: true },
-      ),
-    );
+      : liveScope
+        ? empty(
+            liveRunning
+              ? "Live search is in progress"
+              : liveCount
+                ? "No products match these filters"
+                : "No products captured in this search",
+            liveRunning
+              ? "The count above follows this search. Results appear when the run saves its completed pages; you can leave and return."
+              : liveCount
+                ? `This search collected ${liveCount} items. Clear filters to show every item from this run, including hidden products.`
+                : "Check the search status above. Try another query if Amazon returned no results, or retry an interrupted search.",
+            !liveRunning && liveCount
+              ? '<button class="button" data-action="clear-live-filters">Clear filters</button>'
+              : "",
+          )
+        : empty(
+            state.productVisibility === "hidden"
+              ? "No hidden products in this view"
+              : state.query
+                ? "No observed products match"
+                : "Your discovery history starts here",
+            state.productVisibility === "hidden"
+              ? "Choose Visible to return to your products. Hidden products can be restored individually or in a selection."
+              : state.query
+                ? "Try a broader phrase, clear the filters, or search the live Additional Items catalog."
+                : "Connect Amazon, then collect your queues or run a live search. Observations and match reasons will appear here.",
+            state.productVisibility === "hidden"
+              ? ""
+              : `<button class="button" data-action="${state.connection.state === "connected" ? "collect" : "connect"}">${state.connection.state === "connected" ? "Refresh queues" : "Connect Amazon"}</button>`,
+          );
+    bindImageFallbacks(grid);
+    bindVisibility("products", products);
     $("#product-coverage").textContent = coverageText(
       data.coverage,
       state.mode === "live" && !!state.liveJob,
@@ -541,6 +665,149 @@
     node.innerHTML = icons.image + "<span>Image unavailable</span>";
     return node;
   }
+  function bindImageFallbacks(root) {
+    $$("img", root).forEach((image) =>
+      image.addEventListener(
+        "error",
+        () => image.replaceWith(imageFallback()),
+        { once: true },
+      ),
+    );
+  }
+  function recordImage(record, resource) {
+    const hidden = state.settings.image_mode === "hidden";
+    const demoCell = state.demo ? demoImage(record.title) : -1;
+    const image = hidden
+      ? ""
+      : state.settings.image_mode === "direct"
+        ? safeImage(record.image_url)
+        : record.image_url
+          ? `/api/${resource}/${encodeURIComponent(record.id)}/image`
+          : "";
+    return demoCell >= 0 && !hidden
+      ? `<span class="demo-product-image demo-cell-${demoCell}" role="img" aria-label="Synthetic illustration: ${esc(record.title)}"></span>`
+      : image
+        ? `<img src="${esc(image)}" alt="${resource === "reviews" ? "" : esc(record.title)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`
+        : `<span class="image-empty">${icons.image}<span>${hidden ? "Images hidden" : "Image unavailable"}</span></span>`;
+  }
+  function visibilityTools(resource, visibility, records) {
+    const label = resource === "products" ? "Product" : "Review";
+    return `<div class="visibility-tools" id="${resource}-visibility-tools"><div class="visibility-row"><label class="sort-control">${label} visibility<select data-visibility-filter="${resource}" aria-label="${label} visibility">${selectOptions(
+      [
+        ["visible", "Visible"],
+        ["hidden", "Hidden"],
+        ["all", "All records"],
+      ],
+      visibility,
+    )}</select></label><label class="selection-label"><input type="checkbox" data-select-displayed="${resource}" ${!records.length ? "disabled" : ""}>Select displayed</label><span class="selection-count" data-selection-count="${resource}" role="status">0 selected</span><div class="selection-actions">${visibility !== "hidden" ? `<button class="button compact" data-bulk-visibility="${resource}" data-hidden="true" disabled>Hide selected</button>` : ""}${visibility !== "visible" ? `<button class="button compact" data-bulk-visibility="${resource}" data-hidden="false" disabled>Restore selected</button>` : ""}</div></div><p class="visibility-help">${resource === "reviews" ? "Hiding only removes records from your visible list. Amazon status, local progress and review reminders are unchanged." : "Hide products you do not want to see here. Hidden products stay in history and can be restored."}</p></div>`;
+  }
+  function recordSelection(record, resource) {
+    return `<label class="selection-label"><input type="checkbox" data-select-record="${resource}" data-record-id="${record.id}" data-hidden="${!!record.hidden}" aria-label="Select ${esc(record.title)}"><span>Select</span></label>`;
+  }
+  function visibilityButton(record, resource) {
+    return `<button class="button subtle compact" data-record-visibility="${resource}" data-record-id="${record.id}" data-hidden="${!record.hidden}" aria-label="${record.hidden ? "Restore" : "Hide"} ${esc(record.title)}">${record.hidden ? "Restore" : "Hide"}</button>`;
+  }
+  function bindVisibility(resource, records) {
+    const inputs = () => $$(`[data-select-record="${resource}"]`);
+    const update = () => {
+      const selected = inputs().filter((input) => input.checked);
+      const all = $(`[data-select-displayed="${resource}"]`);
+      all.checked = !!selected.length && selected.length === records.length;
+      all.indeterminate = !!selected.length && selected.length < records.length;
+      $(`[data-selection-count="${resource}"]`).textContent =
+        `${selected.length} selected`;
+      $$(`[data-bulk-visibility="${resource}"]`).forEach((button) => {
+        button.disabled = !selected.some(
+          (input) => input.dataset.hidden !== button.dataset.hidden,
+        );
+      });
+    };
+    inputs().forEach((input) => (input.onchange = update));
+    $(`[data-select-displayed="${resource}"]`).onchange = (event) => {
+      inputs().forEach((input) => (input.checked = event.target.checked));
+      update();
+    };
+    $(`[data-visibility-filter="${resource}"]`).onchange = async (event) => {
+      if (resource === "products") {
+        state.productVisibility = event.target.value;
+        state.offset = 0;
+      } else {
+        state.reviewVisibility = event.target.value;
+        state.reviewOffset = 0;
+      }
+      try {
+        await refreshVisibility(resource);
+      } catch (error) {
+        toast(error.message, true);
+      }
+    };
+  }
+  const refreshVisibility = (resource) =>
+    resource === "products" ? loadProducts() : renderReviews();
+  async function showProductDetails(product, savedJob = null) {
+    state.details = { product, job: savedJob, error: "" };
+    renderProductDetails();
+    $("#product-details-dialog").showModal();
+    if (!savedJob) await requestProductDetails();
+  }
+  async function requestProductDetails() {
+    const current = state.details;
+    if (!current) return;
+    current.job = null;
+    current.error = "";
+    renderProductDetails();
+    try {
+      const job = await write(`/products/${current.product.id}/details`);
+      if (state.details !== current) return;
+      current.job = job;
+    } catch (error) {
+      if (state.details !== current) return;
+      current.error = error.message;
+    }
+    if (state.details === current) renderProductDetails();
+  }
+  function renderProductDetails() {
+    if (!state.details) return;
+    const { product, job, error } = state.details;
+    const result = job?.result || {};
+    const ready = job?.status === "complete";
+    const observed = ready && result.state === "observed";
+    const active = job && ["queued", "running"].includes(job.status);
+    const title = result.title || product.title;
+    let content;
+    if (observed) {
+      const variants = Array.isArray(result.variants) ? result.variants : [];
+      content = `<dl class="detail-facts"><div class="detail-etv"><dt>${esc(result.etv_label || "Estimated Taxable Value")}</dt><dd>${esc(result.etv || "Unavailable")}</dd></div>${result.availability ? `<div><dt>Observed availability</dt><dd>${esc(result.availability)}</dd></div>` : ""}${variants.map((variant) => `<div><dt>${esc(variant.name || "Variant")}</dt><dd>${esc(variant.selected || "Selection not captured")}${Array.isArray(variant.options) && variant.options.length ? `<small>Observed options: ${esc(variant.options.join(" · "))}</small>` : ""}</dd></div>`).join("")}</dl>${result.message ? `<p class="small">${esc(result.message)}</p>` : ""}${result.description ? `<div class="detail-description"><h3>Product description</h3><p>${esc(result.description)}</p></div>` : ""}<p class="small muted">Observed ${esc(result.observed_at ? date(result.observed_at, { hour: "numeric", minute: "2-digit" }) : "at an unavailable time")}. Values and availability can change on Amazon.</p>`;
+    } else {
+      const heading = error
+        ? "Details could not load"
+        : ready
+          ? "Details unavailable"
+          : job?.status === "needs_login"
+            ? "Reconnect Amazon to load details"
+            : job?.status === "failed"
+              ? "Details could not load"
+              : job?.status === "cancelled"
+                ? "Details request cancelled"
+                : active
+                  ? job.status === "queued"
+                    ? "Waiting for the Amazon browser"
+                    : "Reading Amazon product details"
+                  : "Starting details request";
+      const message =
+        error ||
+        (ready ? result.message : job?.error) ||
+        (active
+          ? job.status === "queued"
+            ? "If collection is running, this request will follow it. You can close this window and follow the request in Activity."
+            : "Opening this product’s See details panel on Amazon."
+          : "Preparing a read-only request for this specific product.");
+      content = `<div class="detail-state" role="status"><h3>${esc(heading)}</h3><p>${esc(message)}</p></div>`;
+    }
+    $("#product-details-content").innerHTML =
+      `<div class="detail-product"><div class="review-image">${recordImage(product, "products")}</div><div><h3>${esc(title)}</h3><p class="mono">${esc(result.asin || product.asin || "ASIN not captured")}</p>${external(product.product_url, "Open product on Amazon")}</div></div>${content}<div class="detail-actions">${active ? `<button class="button" data-cancel-detail="${job.id}">Cancel request</button>` : job || error ? '<button class="button" data-action="refresh-details">Refresh details</button>' : ""}${job?.status === "needs_login" ? '<button class="button primary" data-action="details-connect">Connect Amazon</button>' : ""}</div><p class="detail-note">Read-only details. Variations describe what Amazon showed when captured; VineSearch never requests an item.</p>`;
+    bindImageFallbacks($("#product-details-content"));
+  }
   function demoImage(title) {
     const t = title.toLowerCase();
     if (t.includes("switch")) return 0;
@@ -552,27 +819,21 @@
     return -1;
   }
   function productCard(product) {
-    const sources = (product.sources || []).map((s) =>
-      typeof s === "string"
-        ? s
-        : s.kind || s.source || (s.scope || "").split(":")[0],
-    );
-    const href =
-      safeAmazon(product.vine_url) || safeAmazon(product.product_url);
-    const demoCell = state.demo ? demoImage(product.title) : -1;
-    const image =
-      state.settings.image_mode === "hidden"
-        ? ""
-        : state.settings.image_mode === "direct"
-          ? safeImage(product.image_url)
-          : product.image_url
-            ? `/api/products/${encodeURIComponent(product.id)}/image`
-            : "";
+    const sources = [
+      ...new Set(
+        (product.sources || []).map((s) =>
+          typeof s === "string"
+            ? s.split(":")[0]
+            : s.kind || s.source || (s.scope || "").split(":")[0],
+        ),
+      ),
+    ];
+    const href = safeAmazon(product.product_url);
     const reasons = (product.reasons || []).map((r) =>
       typeof r === "string" ? r : r.reason || r.label || JSON.stringify(r),
     );
     const matched = product.matches?.length;
-    return `<article class="product-card"><div class="product-image">${demoCell >= 0 && state.settings.image_mode !== "hidden" ? `<span class="demo-product-image demo-cell-${demoCell}" role="img" aria-label="Synthetic illustration: ${esc(product.title)}"></span>` : image ? `<img src="${esc(image)}" alt="${esc(product.title)}" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : `<span class="image-empty">${icons.image}<span>${state.settings.image_mode === "hidden" ? "Images hidden" : "Image unavailable"}</span></span>`}</div><div class="product-body"><div class="product-source"><span>${esc(sources.map(sourceName).join(" / ") || "Observed product")}</span></div><h2 class="product-title">${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(product.title)}</a>` : esc(product.title)}</h2><p class="product-category">${esc(product.category || "Category not observed")}</p><div class="match-line"><strong>${esc(product.score ?? 0)}</strong><span>match score${matched ? ` · ${matched} tracker${matched === 1 ? "" : "s"}` : ""}</span></div><p class="product-reasons">${esc(reasons.slice(0, 3).join(" · ") || "No active tracker match")}</p><div class="product-meta"><span title="${esc(product.last_seen)}">Seen ${esc(relative(product.last_seen))}</span>${external(href, "Open on Amazon")}</div></div></article>`;
+    return `<article class="product-card${product.hidden ? " locally-hidden" : ""}" data-product-id="${product.id}"><div class="product-image">${recordImage(product, "products")}</div><div class="product-body"><div class="product-source"><span>${esc(sources.map(sourceName).join(" / ") || "Observed product")}</span></div><h2 class="product-title">${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(product.title)}</a>` : esc(product.title)}</h2><p class="product-category">${esc(product.category || "Category not observed")}</p><div class="match-line"><strong>${esc(product.score ?? 0)}</strong><span>match score${matched ? ` · ${matched} tracker${matched === 1 ? "" : "s"}` : ""}</span></div><p class="product-reasons">${esc(reasons.slice(0, 3).join(" · ") || "No active tracker match")}</p><div class="product-meta"><span title="${esc(product.last_seen)}">Seen ${esc(relative(product.last_seen))}</span></div><div class="product-actions">${external(href, "Open product", "button compact")}<button class="button compact" data-product-details="${product.id}">See details</button></div><div class="record-controls">${recordSelection(product, "products")}${product.hidden ? '<span class="hidden-label">Hidden</span>' : ""}${visibilityButton(product, "products")}</div></div></article>`;
   }
   function renderLiveJob() {
     const node = $("#live-job");
@@ -586,21 +847,147 @@
       "needs_login",
       "cancelled",
     ].includes(j.status);
-    node.innerHTML = `<div class="job-progress"><div><strong>Live search: ${esc(j.query)}</strong> · ${statusLabel(j.status)}<p>${esc(j.error || progressText(j.progress) || (terminal ? "This search is saved in Activity. Its observed results are included below." : "Waiting for the dedicated browser. Progress is saved if you leave."))}</p></div>${terminal ? '<button class="button subtle compact" data-action="dismiss-live">Dismiss</button>' : `<button class="button compact" data-cancel-job="${esc(j.id)}">Cancel</button>`}</div>`;
+    node.innerHTML = `<div class="job-progress"><div><strong>Live search: ${esc(j.query)}</strong> · ${statusLabel(j.status, j)}<p>${esc(jobDescription(j))}</p>${jobGuidance(j)}</div>${terminal ? `<div class="actions">${["partial", "truncated", "cancelled"].includes(j.status) ? `<button class="button compact" data-retry-job="${j.id}">Search again</button>` : ""}<button class="button subtle compact" data-action="dismiss-live">Dismiss</button></div>` : `<button class="button compact" data-cancel-job="${esc(j.id)}">Cancel</button>`}</div>`;
   }
   function progressText(progress) {
     if (!progress) return "";
     if (typeof progress === "string") return progress;
+    const parts = [];
+    if (progress.observed != null)
+      parts.push(`${progress.observed} items observed`);
+    if (progress.pages != null) parts.push(`${progress.pages} completed pages`);
+    if (progress.section === "awaiting_review") parts.push("Awaiting Review");
+    if (progress.section === "reviewed") parts.push("Reviewed");
+    return parts.join(" · ") || progress.message || "";
+  }
+  function jobDescription(job) {
+    const progress = job.progress || {};
+    if (job.kind === "details" && job.status === "complete") {
+      const result = job.result || {};
+      return result.state === "observed"
+        ? `${result.etv_label || "Estimated Taxable Value"}: ${result.etv || "Unavailable"}. ${result.title || ""}`
+        : result.message || "Details were unavailable for this product.";
+    }
+    const count =
+      job.result?.count ?? job.result?.observed_count ?? progress.observed;
+    const pages = progress.pages ?? job.result?.pages;
+    const terminal = !["queued", "running"].includes(job.status);
+    const captured =
+      count != null && pages != null
+        ? `${count} items ${terminal ? "saved" : "observed"} from ${pages} completed page${pages === 1 ? "" : "s"}.`
+        : "";
+    if (job.status === "truncated") {
+      const reason = statusText(job.status, job);
+      return `${captured} ${reason === "Page limit reached" ? "The saved page limit stopped this run before all pages were checked." : reason === "Time limit reached" ? "The saved time limit stopped this run before all pages were checked." : "This earlier run stopped before all pages were checked; its exact stopping limit was not recorded."}`.trim();
+    }
+    if (terminal)
+      return (
+        [captured, job.error].filter(Boolean).join(" ") ||
+        "Finished. Details are saved in Activity."
+      );
     return (
-      progress.message ||
-      Object.entries(progress)
-        .map(([k, v]) => `${pretty(k)}: ${v}`)
-        .join(" · ")
+      progressText(progress) ||
+      (job.status === "queued"
+        ? "Waiting for the shared Amazon browser. You can leave this page and return."
+        : "Checking Amazon. Completed-page counts will appear here.")
     );
   }
+  function jobGuidance(job) {
+    if (job.kind === "details") return "";
+    if (!["truncated", "partial"].includes(job.status)) return "";
+    if (job.kind === "search")
+      return '<p class="small">Search again to check every available page. All searches check every exposed result page without a total page or time limit.</p>';
+    return '<p class="small">Review the page and time limits in <a href="#settings">Settings</a> before running again.</p>';
+  }
 
-  async function renderTrackers(epoch = state.viewEpoch) {
-    await loadTrackers();
+  function renderHelp() {
+    const topics = window.VINE_HELP_TOPICS || [];
+    const query = location.hash.split("?")[1] || "";
+    const requested = new URLSearchParams(query).get("topic") || "start";
+    const topic = topics.find((entry) => entry.id === requested) || topics[0];
+    if (!topic)
+      throw new Error("Help could not load. Refresh the page to try again.");
+    $("#main").innerHTML =
+      page("Help", "Searches, tracker rules, review progress and alerts.") +
+      `<div class="help-layout"><nav class="help-nav" aria-label="Help topics">${topics.map((entry) => `<a href="#help?topic=${esc(entry.id)}" ${entry.id === topic.id ? 'aria-current="page"' : ""}>${esc(entry.title)}</a>`).join("")}</nav><label class="help-topic-select">Help topic<select id="help-topic">${selectOptions(
+        topics.map((entry) => [entry.id, entry.title]),
+        topic.id,
+      )}</select></label><article class="help-content" aria-labelledby="help-topic-title"><h2 id="help-topic-title" tabindex="-1">${esc(topic.title)}</h2>${topic.html}</article></div>`;
+    $("#help-topic").onchange = (event) => {
+      location.hash = `help?topic=${event.target.value}`;
+    };
+    document.title = `VineSearch Help · ${topic.title}`;
+  }
+  function renderTrackerSaveStatus() {
+    const node = $("#tracker-save-status");
+    if (!node) return;
+    const key = state.trackerEditorId;
+    const requesting = state.trackerSaveRequests[key];
+    const pending = state.pendingTrackerSaves[key];
+    const saved = state.trackerSaveMessages[key];
+    const draft = state.trackerDrafts[key];
+    const button = $('#tracker-form [type="submit"]');
+    if (button) button.disabled = Boolean(requesting || pending?.checking);
+    node.hidden = !requesting && !pending && !saved && !draft;
+    node.className =
+      requesting || pending
+        ? "tracker-save-status pending"
+        : "tracker-save-status";
+    node.innerHTML = requesting
+      ? "<p>Saving this tracker… Your entries are kept while the server responds. You can move between views without sending another save.</p>"
+      : pending
+        ? `<p>${pending.checking ? "The server accepted this tracker. Confirming it appears in the saved list…" : `The server accepted “${esc(pending.saved.name)}”, but its saved-list confirmation is still pending. Your entries are kept.`}</p>${pending.error ? `<p>${esc(pending.error)}</p>` : ""}<button class="button compact" data-action="retry-tracker-save" data-tracker-id="${esc(key)}" ${pending.checking ? "disabled" : ""}>Retry list refresh</button><p class="small">This checks the saved ID and does not create another tracker.</p>`
+        : saved
+          ? `<p>${esc(saved)}</p>`
+          : draft
+            ? "<p>Unsaved changes are kept while you move between views. Save before reloading or closing this tab.</p>"
+            : "";
+  }
+  async function confirmTrackerSave(key) {
+    const pending = state.pendingTrackerSaves[key];
+    if (!pending || pending.checking) return;
+    pending.checking = true;
+    renderTrackerSaveStatus();
+    try {
+      const listed = items(await api("/trackers"));
+      const confirmed = listed.find((tracker) => String(tracker.id) === key);
+      if (!confirmed)
+        throw new Error(
+          "The accepted tracker is not in the refreshed list yet. Retry the list refresh before creating another tracker.",
+        );
+      state.trackers = listed;
+      const laterEdits =
+        JSON.stringify(state.trackerDrafts[key]?.values) !==
+        JSON.stringify(pending.values);
+      if (!laterEdits) delete state.trackerDrafts[key];
+      delete state.pendingTrackerSaves[key];
+      state.trackerSaveMessages[key] =
+        `Saved: ${confirmed.name}. Confirmed in the saved tracker list.${laterEdits ? " Your later edits are still unsaved." : ""}`;
+      if (state.route === "trackers" && state.trackerEditorId === key) {
+        await renderTrackers(state.viewEpoch, false);
+        $("#tracker-save-status").scrollIntoView({ block: "center" });
+      }
+      toast(`Tracker saved: ${confirmed.name}.`);
+    } catch (error) {
+      pending.error = error.message;
+      pending.checking = false;
+      renderTrackerSaveStatus();
+      const node =
+        state.route === "trackers" && state.trackerEditorId === key
+          ? $("#tracker-save-status")
+          : null;
+      if (node) {
+        node.scrollIntoView({ block: "center" });
+        node.focus({ preventScroll: true });
+      } else
+        toast(
+          "Tracker accepted, but list confirmation failed. Return to Trackers to retry the list refresh.",
+          true,
+        );
+    }
+  }
+  async function renderTrackers(epoch = state.viewEpoch, refresh = true) {
+    if (refresh) await loadTrackers();
     if (epoch !== state.viewEpoch) return;
     $("#main").innerHTML =
       page(
@@ -609,12 +996,21 @@
         `<button class="button primary" data-action="new-tracker">${icons.plus}New tracker</button>`,
       ) +
       `<div class="tracker-layout"><section aria-label="Saved interest trackers"><div class="tracker-list">${state.trackers.map(trackerRow).join("")}</div>${!state.trackers.length ? empty("Track an interest", "Give an interest a name, add phrases and exclusions, then choose whether to search for it on a schedule.") : ""}<p class="coverage">Pausing a tracker removes it from ranking and scheduled searches. Existing products stay in your history. Editing rules does not replay old notifications.</p></section><aside class="tracker-editor" id="tracker-editor" aria-labelledby="editor-heading"></aside></div>`;
-    renderTrackerEditor();
+    renderTrackerEditor(
+      state.trackers.find(
+        (tracker) => String(tracker.id) === state.trackerEditorId,
+      ) ||
+        state.pendingTrackerSaves[state.trackerEditorId]?.saved ||
+        null,
+    );
   }
   function trackerRow(t) {
     return `<article class="tracker-row"><div><h2>${esc(t.name)}</h2><p>${t.query ? `Live query: ${esc(t.query)}` : "History matching only"}${t.schedule_enabled ? ` · every ${t.interval_minutes} min` : ""}</p><div class="tags">${!t.enabled ? '<span class="tag paused">Paused</span>' : ""}${t.phrases.map((p) => `<span class="tag">${esc(p)}</span>`).join("")}${t.notify ? '<span class="tag">Alerts enabled</span>' : ""}</div><p class="muted small" style="margin-top:10px">${esc(t.phrase_mode === "all" ? "All phrases required" : "Any phrase may match")}${t.exclusions.length ? ` · ${t.exclusions.length} exclusion${t.exclusions.length === 1 ? "" : "s"}` : ""} · minimum score ${t.min_score}</p></div><div class="tracker-actions"><button class="button compact" data-edit-tracker="${t.id}">Edit</button><button class="button subtle compact" data-toggle-tracker="${t.id}">${t.enabled ? "Pause" : "Resume"}</button></div></article>`;
   }
   function renderTrackerEditor(tracker = null) {
+    state.trackerEditorId = tracker ? String(tracker.id) : "new";
+    let editorKey = state.trackerEditorId;
+    const draft = state.trackerDrafts[editorKey];
     const t = tracker || {
       name: "",
       enabled: true,
@@ -631,22 +1027,78 @@
       notify: false,
       schedule_enabled: false,
       interval_minutes: 15,
-      page_budget: 5,
     };
     $("#tracker-editor").innerHTML =
-      `<h2 id="editor-heading">${tracker ? "Edit tracker" : "New tracker"}</h2><p>Matching is deterministic. Exclusions always remove a product from this tracker.</p><form id="tracker-form" data-id="${tracker?.id || ""}"><div class="form-grid">${field("name", "Tracker name", t.name, "text", "", 'required maxlength="120"')}${field("query", "Live Amazon query", t.query, "text", "Amazon searches Additional Items.", 'maxlength="200"')}<label class="field wide">Positive phrases<textarea name="phrases" placeholder="One phrase per line">${esc(t.phrases.join("\n"))}</textarea><small>Use one phrase per line. No phrases means all titles can match.</small></label>${selectField(
+      `<h2 id="editor-heading">${tracker ? "Edit tracker" : "New tracker"}</h2><div id="tracker-save-status" tabindex="-1" role="status"></div><div class="tracker-guide"><p><a class="button compact" href="#help?topic=trackers" target="_blank" rel="noopener">Read tracker help</a> <span class="small muted">opens a new tab</span></p><ol><li>Give the tracker a name. Add an Amazon query to find candidates.</li><li>Use include and exclude phrases to decide which collected titles match.</li><li>Choose a schedule and alerts if you want ongoing collection.</li></ol><p>Only products seen within the last ${esc(t.freshness_hours)} hours qualify. Change this under Ranking weights and freshness.</p><details class="tracker-example"><summary>Worked example: network racks</summary><dl><div><dt>Name</dt><dd>Network Rack</dd></div><div><dt>Amazon query</dt><dd>network rack</dd></div><div><dt>Include phrases</dt><dd>network rack<br>server rack</dd></div><div><dt>Phrase matching</dt><dd>Any phrase</dd></div><div><dt>Excluded phrases</dt><dd>wine rack<br>shoe rack</dd></div><div><dt>Categories</dt><dd>Leave blank</dd></div></dl><p>Optional: search every 15 minutes. Alerts also need a destination in Settings. This example does not change your tracker.</p></details></div><form id="tracker-form" data-id="${tracker?.id || ""}"><div class="form-grid">${field("name", "Tracker name", t.name, "text", "A label only; this does not search or filter titles.", 'required maxlength="120"')}${field("query", "Amazon search query", t.query, "text", "Finds candidates in Additional Items when scheduled search is enabled. Matching rules below still apply.", 'maxlength="200"')}<label class="field wide">Include phrases<textarea name="phrases" placeholder="One phrase per line">${esc(t.phrases.join("\n"))}</textarea><small>One phrase per line, matched as exact text anywhere in a title; case does not matter. Blank includes all titles within the freshness window.</small></label>${selectField(
         "phrase_mode",
         "Phrase matching",
         t.phrase_mode,
         [
           ["any", "Any phrase"],
-          ["all", "Every phrase"],
+          ["all", "All phrases"],
         ],
-      )}${field("min_score", "Minimum score", t.min_score, "number", "Required to count as a match.", 'min="0" max="1000" required')}<label class="field wide">Excluded phrases<textarea name="exclusions" placeholder="One exclusion per line">${esc(t.exclusions.join("\n"))}</textarea></label><label class="field wide">Observed categories<input name="categories" value="${esc(t.categories.join(", "))}" placeholder="Any category"><small>Optional, comma-separated exact categories. Unknown categories do not satisfy a restriction.</small></label>${check("enabled", "Enable this tracker", t.enabled)}${check("schedule_enabled", "Search Amazon on a schedule", t.schedule_enabled, "A live query is required. Global collection pause also pauses this schedule.")}${field("interval_minutes", "Search interval (minutes)", t.interval_minutes, "number", "", 'min="5" max="10080" required')}${field("page_budget", "Maximum search pages", t.page_budget, "number", "", 'min="1" max="100" required')}${check("notify", "Alert on new eligible matches", t.notify, "Requires an enabled destination in Settings. Existing history is baselined.")}
-      <details class="inline-disclosure"><summary>Ranking weights and freshness</summary><div class="form-grid">${field("phrase_weight", "Per matching phrase", t.phrase_weight, "number", "", 'min="0" max="1000" required')}${field("category_weight", "Category match", t.category_weight, "number", "", 'min="0" max="1000" required')}${field("freshness_weight", "Freshness bonus", t.freshness_weight, "number", "", 'min="0" max="1000" required')}${field("freshness_hours", "Freshness window (hours)", t.freshness_hours, "number", "Only products inside this window qualify.", 'min="1" max="8760" required')}</div></details></div><div class="form-actions"><button class="button primary" type="submit">Save tracker</button>${tracker ? `<button class="button subtle danger" type="button" data-delete-tracker="${tracker.id}">Delete tracker</button>` : ""}</div><p class="form-error" role="alert"></p></form>`;
-    $("#tracker-form").onsubmit = async (event) => {
+        "Any needs at least one include phrase. All needs every phrase in the same title.",
+      )}${field("min_score", "Minimum match score (points)", t.min_score, "number", "Points are the total of your ranking rules, not a percentage or confidence estimate.", 'min="0" max="1000" required')}<label class="field wide">Excluded phrases<textarea name="exclusions" placeholder="One exclusion per line">${esc(t.exclusions.join("\n"))}</textarea><small>Any matching exclusion removes the product, even when include phrases match.</small></label><label class="field wide">Observed categories<input name="categories" value="${esc(t.categories.join(", "))}" placeholder="Any category"><small>Leave blank unless you want to restrict matches to known observed categories. Use exact names, separated by commas. Products with an unknown category will be excluded.</small></label>${check("enabled", "Enable this tracker", t.enabled)}${check("schedule_enabled", "Search Amazon on a schedule", t.schedule_enabled, "A live query is required. Global collection pause also pauses this schedule.")}${field("interval_minutes", "Search interval (minutes)", t.interval_minutes, "number", "", 'min="5" max="10080" required')}${check("notify", "Alert on new eligible matches", t.notify, "Requires an enabled destination in Settings. Existing history is baselined.")}
+      <details class="inline-disclosure"><summary>Ranking weights and freshness</summary><div class="form-grid">${field("phrase_weight", "Per matching phrase", t.phrase_weight, "number", "", 'min="0" max="1000" required')}${field("category_weight", "Category match", t.category_weight, "number", "", 'min="0" max="1000" required')}${field("freshness_weight", "Freshness bonus", t.freshness_weight, "number", "", 'min="0" max="1000" required')}${field("freshness_hours", "Only match items seen within (hours)", t.freshness_hours, "number", "Older observations are excluded even if their title matches. This is a filter, in addition to the freshness points.", 'min="1" max="8760" required')}</div></details></div><div class="form-actions"><button class="button primary" type="submit">Save tracker</button>${tracker ? `<button class="button subtle danger" type="button" data-delete-tracker="${tracker.id}">Delete tracker</button>` : ""}</div><p class="form-error" role="alert"></p></form>`;
+    const editorForm = $("#tracker-form");
+    editorForm.noValidate = true;
+    if (draft) {
+      for (const control of editorForm.elements) {
+        if (!control.name || !(control.name in draft.values)) continue;
+        if (control.type === "checkbox")
+          control.checked = draft.values[control.name];
+        else control.value = draft.values[control.name];
+      }
+      $(".inline-disclosure", editorForm).open = draft.advancedOpen;
+    }
+    const rememberDraft = () => {
+      state.trackerDrafts[editorKey] = {
+        values: Object.fromEntries(
+          [...editorForm.elements]
+            .filter((control) => control.name)
+            .map((control) => [
+              control.name,
+              control.type === "checkbox" ? control.checked : control.value,
+            ]),
+        ),
+        advancedOpen: $(".inline-disclosure", editorForm).open,
+      };
+      delete state.trackerSaveMessages[editorKey];
+      if (state.route === "trackers" && state.trackerEditorId === editorKey)
+        renderTrackerSaveStatus();
+    };
+    editorForm.addEventListener("input", (event) => {
+      event.target.removeAttribute("aria-invalid");
+      rememberDraft();
+    });
+    editorForm.addEventListener("change", rememberDraft);
+    $(".inline-disclosure", editorForm).addEventListener("toggle", () => {
+      if (state.trackerDrafts[editorKey]) rememberDraft();
+    });
+    renderTrackerSaveStatus();
+    editorForm.onsubmit = async (event) => {
       event.preventDefault();
+      if (
+        state.trackerSaveRequests[editorKey] ||
+        state.pendingTrackerSaves[editorKey]?.checking
+      )
+        return;
       const form = event.currentTarget;
+      rememberDraft();
+      const invalid = [...form.elements].find(
+        (control) => control.willValidate && !control.validity.valid,
+      );
+      if (invalid) {
+        errorIn(form, new Error(invalid.validationMessage), invalid);
+        return;
+      }
+      $$(".form-error", form).forEach((node) => {
+        node.textContent = "";
+      });
+      $$("[aria-invalid]", form).forEach((node) =>
+        node.removeAttribute("aria-invalid"),
+      );
+      const submittedValues = { ...state.trackerDrafts[editorKey].values };
       const data = new FormData(form);
       const payload = {};
       for (const key of ["name", "query", "phrase_mode"])
@@ -671,35 +1123,72 @@
         "min_score",
         "freshness_hours",
         "interval_minutes",
-        "page_budget",
       ])
         payload[key] = Number(data.get(key));
-      const button = $('[type="submit"]', form);
-      button.disabled = true;
+      const requestKey = editorKey;
+      state.trackerSaveRequests[requestKey] = true;
+      renderTrackerSaveStatus();
       try {
         const id = form.dataset.id;
-        await write(
+        const saved = await write(
           "/trackers" + (id ? `/${id}` : ""),
           payload,
           id ? "PATCH" : "POST",
         );
-        toast("Tracker saved. Ranking uses these rules now.");
-        await renderTrackers();
+        if (!saved?.id)
+          throw new Error(
+            "The server did not return a saved tracker ID. Your entries are kept; check the tracker list before trying again.",
+          );
+        const savedKey = String(saved.id);
+        const sameEditor = state.trackerEditorId === editorKey;
+        if (savedKey !== editorKey) {
+          state.trackerDrafts[savedKey] = state.trackerDrafts[editorKey];
+          delete state.trackerDrafts[editorKey];
+        }
+        editorKey = savedKey;
+        form.dataset.id = savedKey;
+        if (sameEditor) state.trackerEditorId = savedKey;
+        state.pendingTrackerSaves[savedKey] = {
+          saved,
+          values: submittedValues,
+          checking: false,
+          error: "",
+        };
+        delete state.trackerSaveMessages[savedKey];
+        if (sameEditor && state.route === "trackers")
+          renderTrackerEditor(saved);
+        await confirmTrackerSave(savedKey);
       } catch (error) {
-        errorIn(form, error);
+        const activeForm =
+          state.route === "trackers" && state.trackerEditorId === editorKey
+            ? $("#tracker-form")
+            : null;
+        if (activeForm) errorIn(activeForm, error);
+        else toast(error.message, true);
       } finally {
-        button.disabled = false;
+        delete state.trackerSaveRequests[requestKey];
+        renderTrackerSaveStatus();
       }
     };
   }
 
   async function renderReviews(epoch = state.viewEpoch) {
+    const request = ++reviewRequest;
     const params = new URLSearchParams({
       ...state.reviewFilters,
+      visibility: state.reviewVisibility,
       offset: state.reviewOffset,
       limit: state.reviewLimit,
     });
     const data = await api("/reviews?" + params);
+    if (request !== reviewRequest || epoch !== state.viewEpoch) return;
+    if (state.reviewOffset && state.reviewOffset >= data.total) {
+      state.reviewOffset = Math.max(
+        0,
+        Math.floor((data.total - 1) / state.reviewLimit) * state.reviewLimit,
+      );
+      return renderReviews(epoch);
+    }
     if (epoch !== state.viewEpoch) return;
     const records = items(data);
     const counts = {};
@@ -733,7 +1222,9 @@
           ["title", "Title A–Z"],
         ],
         state.reviewFilters.sort,
-      )}</select><button class="button compact" type="submit">Apply</button></form>${records.length ? `<table class="data-table"><thead><tr><th class="title-cell">Product / variant</th><th>Order</th><th>Amazon observed</th><th>Local progress</th><th>Links</th></tr></thead><tbody>${records.map(reviewRow).join("")}</tbody></table>` : empty("No review records in this view", "Sync your Awaiting Review and Reviewed pages, import metadata, or clear the filters. Local progress never submits a review to Amazon.", '<button class="button" data-action="sync-reviews">Sync reviews</button>')}${(data.total || 0) > state.reviewLimit ? `<div class="pagination"><button class="button compact" data-review-page="prev" ${state.reviewOffset === 0 ? "disabled" : ""}>Previous</button><span>${state.reviewOffset + 1}–${Math.min(state.reviewOffset + state.reviewLimit, data.total)} of ${data.total}</span><button class="button compact" data-review-page="next" ${state.reviewOffset + state.reviewLimit >= data.total ? "disabled" : ""}>Next</button></div>` : ""}<p class="coverage">${esc(coverageText(data.coverage))} Local progress counts describe the displayed page. Counts describe saved records, not your account’s official review percentage. A partial scan never marks a missing item completed.</p>`;
+      )}</select><button class="button compact" type="submit">Apply</button></form>${visibilityTools("reviews", state.reviewVisibility, records)}${records.length ? `<table class="data-table"><thead><tr><th class="title-cell">Product / variant</th><th>Order</th><th>Amazon observed</th><th>Local progress</th><th>Links</th></tr></thead><tbody>${records.map(reviewRow).join("")}</tbody></table>` : empty(state.reviewVisibility === "hidden" ? "No hidden reviews in this view" : "No review records in this view", state.reviewVisibility === "hidden" ? "Choose Visible to return to your review list. Hiding never changes your Amazon review obligations." : "Sync your Awaiting Review and Reviewed pages, import metadata, or clear the filters. Local progress never submits a review to Amazon.", state.reviewVisibility === "hidden" ? "" : '<button class="button" data-action="sync-reviews">Sync reviews</button>')}${(data.total || 0) > state.reviewLimit ? `<div class="pagination"><button class="button compact" data-review-page="prev" ${state.reviewOffset === 0 ? "disabled" : ""}>Previous</button><span>${state.reviewOffset + 1}–${Math.min(state.reviewOffset + state.reviewLimit, data.total)} of ${data.total}</span><button class="button compact" data-review-page="next" ${state.reviewOffset + state.reviewLimit >= data.total ? "disabled" : ""}>Next</button></div>` : ""}<p class="coverage">${esc(coverageText(data.coverage))} Local progress counts describe the displayed page. Counts describe saved records, not your account’s official review percentage. A partial scan never marks a missing item completed.</p>`;
+    bindVisibility("reviews", records);
+    bindImageFallbacks($("#main"));
     $("#review-filter-form").onsubmit = (event) => {
       event.preventDefault();
       state.reviewFilters = Object.fromEntries(
@@ -793,14 +1284,14 @@
     );
   }
   function reviewRow(r) {
-    return `<tr><td class="title-cell" data-label="Product"><h3>${esc(r.title)}</h3>${r.variant ? `<p>${esc(r.variant)}</p>` : ""}<p class="mono">${esc(r.asin || "ASIN not observed")}</p>${r.identity_quality === "provisional" ? "<p>Provisional identity</p>" : ""}</td><td data-label="Order"><span>${esc(r.order_date ? date(r.order_date) : "Date unavailable")}</span><p>${r.age_days != null ? `${esc(r.age_days)} days old` : "Age unavailable"}</p>${r.target_date ? `<p>${esc(r.target_kind === "personal" ? "Personal target" : "Observed deadline")}: ${esc(date(r.target_date))}${r.overdue ? " · past target" : ""}</p>` : ""}</td><td data-label="Amazon observed"><span>${esc(r.observed_status || "Unknown")}</span><p>${esc(sourceName(r.source))} · ${esc(relative(r.last_seen))}</p></td><td data-label="Local progress"><label class="screen-reader" for="progress-${r.id}">Local progress for ${esc(r.title)}</label><select id="progress-${r.id}" data-review-progress="${r.id}" data-previous="${esc(r.local_progress)}">${selectOptions(
+    return `<tr data-review-id="${r.id}" class="${r.hidden ? "locally-hidden" : ""}"><td class="title-cell" data-label="Product"><div class="review-product"><div class="review-image">${recordImage(r, "reviews")}</div><div class="review-product-text"><h3>${esc(r.title)}</h3>${r.variant ? `<p>${esc(r.variant)}</p>` : ""}<p class="mono">${esc(r.asin || "ASIN not observed")}</p>${r.identity_quality === "provisional" ? "<p>Provisional identity</p>" : ""}<div class="record-controls">${recordSelection(r, "reviews")}${r.hidden ? '<span class="hidden-label">Hidden</span>' : ""}</div></div></div></td><td data-label="Order"><span>${esc(r.order_date ? date(r.order_date) : "Date unavailable")}</span><p>${r.age_days != null ? `${esc(r.age_days)} days old` : "Age unavailable"}</p>${r.target_date ? `<p>${esc(r.target_kind === "personal" ? "Personal target" : "Observed deadline")}: ${esc(date(r.target_date))}${r.overdue ? " · past target" : ""}</p>` : ""}</td><td data-label="Amazon observed"><span>${esc(r.observed_status || "Unknown")}</span><p>${esc(sourceName(r.source))} · ${esc(relative(r.last_seen))}</p></td><td data-label="Local progress"><label class="screen-reader" for="progress-${r.id}">Local progress for ${esc(r.title)}</label><select id="progress-${r.id}" data-review-progress="${r.id}" data-previous="${esc(r.local_progress)}">${selectOptions(
       [
         ["not_started", "Not started"],
         ["in_progress", "In progress"],
         ["submitted", "Marked submitted"],
       ],
       r.local_progress,
-    )}</select></td><td data-label="Links">${external(r.product_url, "Product")}<p>${external(r.review_url, "Review on Amazon")}</p></td></tr>`;
+    )}</select></td><td data-label="Links">${external(r.product_url, "Product")}<p>${external(r.review_url, "Review on Amazon")}</p>${visibilityButton(r, "reviews")}</td></tr>`;
   }
   async function previewImport(event) {
     const file = event.target.files[0];
@@ -857,8 +1348,8 @@
         "Settings",
         "Control collection, delivery and the data this installation keeps.",
       ) +
-      `<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"><a href="#settings" data-scroll="collection-settings">Collection</a><a href="#settings" data-scroll="review-settings">Reviews</a><a href="#settings" data-scroll="notification-settings">Notifications</a><a href="#settings" data-scroll="privacy-settings">Privacy & history</a><a href="#settings" data-scroll="connection-settings">Amazon connection</a></nav><div><form id="settings-form"><section class="settings-section" id="collection-settings"><h2>Collection</h2><p>New jobs use saved settings. Pausing stops scheduled work; already-running work may finish. All browser jobs run one at a time.</p><div class="form-grid">${check("collection_enabled", "Enable scheduled collection", s.collection_enabled, "This is the master pause for queue polling and saved live searches.")}${check("rfy_enabled", "Collect Recommended for You", s.rfy_enabled)}${check("afa_enabled", "Collect Available for All", s.afa_enabled)}${field("collection_interval_minutes", "Queue polling interval (minutes)", s.collection_interval_minutes, "number", "Default: 15 minutes.", 'min="5" max="1440" required')}${field("page_budget", "Maximum pages per catalog job", s.page_budget, "number", "Runs reaching this budget report truncated coverage.", 'min="1" max="100" required')}${field("runtime_budget_seconds", "Maximum job duration (seconds)", s.runtime_budget_seconds, "number", "Bounds how long a catalog job occupies the browser.", 'min="15" max="1800" required')}<p class="small">Each interest tracker has its own saved query, search schedule, page budget and ranking rules. <a href="#trackers">Edit trackers</a>.</p></div></section>
-    <section class="settings-section" id="review-settings"><h2>Review sync and reminders</h2><p>Sync reads Amazon’s Awaiting Review and Reviewed pages. Reminders and personal targets do not change Amazon’s requirements or submit reviews.</p><div class="form-grid">${check("review_sync_enabled", "Sync review status on a schedule", s.review_sync_enabled)}${field("review_sync_interval_minutes", "Sync interval (minutes)", s.review_sync_interval_minutes, "number", "", 'min="15" max="10080" required')}${field("review_page_budget", "Maximum review pages", s.review_page_budget, "number", "Partial scans preserve previously observed statuses.", 'min="1" max="100" required')}${check("review_reminders_enabled", "Send review reminders", s.review_reminders_enabled, "Uses your configured notification destination. No reminders are sent by default.")}${field("review_reminder_age_days", "Remind after order age (days)", s.review_reminder_age_days, "number", "", 'min="1" max="365" required')}${field("review_reminder_repeat_days", "Repeat reminder every (days)", s.review_reminder_repeat_days, "number", "", 'min="1" max="90" required')}${field("review_personal_target_days", "Personal target after order (days)", s.review_personal_target_days, "number", "Use 0 for no personal target. Observed deadlines remain distinct.", 'min="0" max="365" required')}</div></section>
+      `<div class="settings-layout"><nav class="settings-nav" aria-label="Settings sections"><a href="#settings" data-scroll="collection-settings">Collection</a><a href="#settings" data-scroll="review-settings">Reviews</a><a href="#settings" data-scroll="notification-settings">Notifications</a><a href="#settings" data-scroll="privacy-settings">Privacy & history</a><a href="#settings" data-scroll="connection-settings">Amazon connection</a></nav><div><form id="settings-form"><section class="settings-section" id="collection-settings"><h2>Collection</h2><p>New jobs use saved settings. Pausing stops scheduled work; already-running work may finish. All browser jobs run one at a time.</p><div class="form-grid">${check("collection_enabled", "Enable scheduled collection", s.collection_enabled, "This is the master pause for queue polling and saved live searches.")}${check("rfy_enabled", "Collect Recommended for You", s.rfy_enabled)}${check("afa_enabled", "Collect Available for All", s.afa_enabled)}${field("collection_interval_minutes", "Queue polling interval (minutes)", s.collection_interval_minutes, "number", "Default: 15 minutes.", 'min="5" max="1440" required')}${field("page_budget", "Queue collection page limit", s.page_budget, "number", "Applies only to Recommended for You and Available for All. All searches continue through every available result page.", 'min="1" max="100" required')}${field("runtime_budget_seconds", "Queue and review sync time limit (seconds)", s.runtime_budget_seconds, "number", "Applies only to queue collection and review sync. Manual and scheduled searches have no total time limit; each can be cancelled.", 'min="15" max="1800" required')}<p class="small">Each interest tracker has its own saved query, search schedule and ranking rules. Scheduled searches check all exposed result pages. <a href="#trackers">Edit trackers</a>.</p></div></section>
+    <section class="settings-section" id="review-settings"><h2>Review sync and reminders</h2><p>Sync reads Amazon’s Awaiting Review and Reviewed pages. Reminders and personal targets do not change Amazon’s requirements or submit reviews.</p><div class="form-grid">${check("review_sync_enabled", "Sync review status on a schedule", s.review_sync_enabled)}${field("review_sync_interval_minutes", "Sync interval (minutes)", s.review_sync_interval_minutes, "number", "", 'min="15" max="10080" required')}${field("review_page_budget", "Review sync page limit", s.review_page_budget, "number", "Shared between Awaiting Review and Reviewed. Incomplete syncs preserve earlier statuses.", 'min="1" max="100" required')}${check("review_reminders_enabled", "Send review reminders", s.review_reminders_enabled, "Uses your configured notification destination. No reminders are sent by default.")}${field("review_reminder_age_days", "Remind after order age (days)", s.review_reminder_age_days, "number", "", 'min="1" max="365" required')}${field("review_reminder_repeat_days", "Repeat reminder every (days)", s.review_reminder_repeat_days, "number", "", 'min="1" max="90" required')}${field("review_personal_target_days", "Personal target after order (days)", s.review_personal_target_days, "number", "Use 0 for no personal target. Observed deadlines remain distinct.", 'min="0" max="365" required')}</div></section>
     <section class="settings-section" id="notification-settings"><h2>Notifications</h2><p>Optional delivery sends product titles, matching details and Amazon links to the destination you choose. Webhooks receive JSON; ntfy receives push messages. Self-hosted ntfy on iOS may use an external wake-up relay.</p><div class="form-grid">${check("notifications_enabled", "Enable external notifications", s.notifications_enabled, "Enabling starts with a baseline of existing history, so old matches do not flood your destination.")}${selectField(
       "notification_adapter",
       "Delivery method",
@@ -965,8 +1456,7 @@
       "needs_login",
       "cancelled",
     ].includes(j.status);
-    const result = j.result || {};
-    return `<article class="activity-row"><h3>${esc(j.kind === "search" ? `Search: ${j.query}` : j.kind === "reviews" ? "Review status sync" : j.kind === "login" ? "Amazon login" : sourceName(j.kind))}</h3><p>${esc(j.error || progressText(j.progress) || `${result.pages ?? "?"} pages · ${result.observed_count ?? "?"} observations`)}</p><p class="mono">${esc(date(j.created_at, { hour: "numeric", minute: "2-digit" }))} · ${esc(j.source || "manual")}</p><div class="activity-end">${statusLabel(j.status)}${j.kind === "search" && ["complete", "partial", "truncated"].includes(j.status) ? `<button class="button subtle compact" data-view-job="${j.id}">View results</button>` : ""}${!terminal ? `<button class="button subtle compact" data-cancel-job="${j.id}">Cancel</button>` : ["failed", "partial", "truncated"].includes(j.status) ? `<button class="button subtle compact" data-retry-job="${j.id}">Run again</button>` : ""}</div></article>`;
+    return `<article class="activity-row"><h3>${esc(j.kind === "search" ? `Search: ${j.query}` : j.kind === "reviews" ? "Review status sync" : j.kind === "details" ? "Product details" : j.kind === "login" ? "Amazon login" : sourceName(j.kind))}</h3><p>${esc(jobDescription(j))}</p>${jobGuidance(j)}<p class="mono">${esc(date(j.created_at, { hour: "numeric", minute: "2-digit" }))} · ${esc(j.source || "manual")}</p><div class="activity-end">${statusLabel(j.status, j)}${j.kind === "details" && terminal ? `<button class="button subtle compact" data-show-details="${j.id}">View details</button>` : ""}${j.kind === "search" && ["complete", "partial", "truncated", "cancelled"].includes(j.status) ? `<button class="button subtle compact" data-view-job="${j.id}">View results</button>` : ""}${!terminal ? `<button class="button subtle compact" data-cancel-job="${j.id}">Cancel</button>` : ["failed", "partial", "truncated", "cancelled"].includes(j.status) ? `<button class="button subtle compact" data-retry-job="${j.id}">Run again</button>` : ""}</div></article>`;
   }
   async function download(path, name) {
     const response = await fetch("/api" + path, { credentials: "same-origin" });
@@ -1025,6 +1515,20 @@
           }
         }
       }
+      if (
+        state.details?.job &&
+        ["queued", "running"].includes(state.details.job.status)
+      ) {
+        const current = state.details;
+        const job = await api("/jobs/" + current.job.id);
+        if (
+          state.details === current &&
+          JSON.stringify(current.job) !== JSON.stringify(job)
+        ) {
+          current.job = job;
+          renderProductDetails();
+        }
+      }
       if (state.liveJob) {
         const jobs = items(await api("/jobs"));
         const job = jobs.find((j) => j.id === state.liveJob.id);
@@ -1034,7 +1538,9 @@
           renderLiveJob();
           if (
             changed &&
-            ["complete", "partial", "truncated"].includes(job.status) &&
+            ["complete", "partial", "truncated", "cancelled"].includes(
+              job.status,
+            ) &&
             state.route === "discover"
           )
             await loadProducts();
@@ -1048,11 +1554,75 @@
   }
   document.addEventListener("click", async (event) => {
     const button = event.target.closest(
-      "[data-action],[data-edit-tracker],[data-toggle-tracker],[data-delete-tracker],[data-cancel-job],[data-retry-job],[data-view-job],[data-scroll]",
+      "[data-action],[data-edit-tracker],[data-toggle-tracker],[data-delete-tracker],[data-cancel-job],[data-retry-job],[data-view-job],[data-scroll],[data-record-visibility],[data-bulk-visibility],[data-product-details],[data-show-details],[data-cancel-detail]",
     );
     if (!button) return;
     const action = button.dataset.action;
     try {
+      if (button.dataset.productDetails) {
+        const product = items(state.products).find(
+          (p) => String(p.id) === button.dataset.productDetails,
+        );
+        if (product) await showProductDetails(product);
+        return;
+      }
+      if (button.dataset.showDetails) {
+        const job = state.jobs.find(
+          (j) => String(j.id) === button.dataset.showDetails,
+        );
+        if (job) {
+          const result = job.result || {};
+          await showProductDetails(
+            {
+              id: result.product_id || job.payload.product_id,
+              title: result.title || "Product details",
+              asin: result.asin || job.payload.asin,
+            },
+            job,
+          );
+        }
+        return;
+      }
+      if (button.dataset.cancelDetail) {
+        await busy(button, async () => {
+          await write(`/jobs/${button.dataset.cancelDetail}/cancel`);
+          if (state.details?.job?.id === Number(button.dataset.cancelDetail)) {
+            state.details.job = await api(
+              `/jobs/${button.dataset.cancelDetail}`,
+            );
+            renderProductDetails();
+          }
+        });
+        return;
+      }
+      if (button.dataset.recordVisibility || button.dataset.bulkVisibility) {
+        const resource =
+          button.dataset.recordVisibility || button.dataset.bulkVisibility;
+        const hidden = button.dataset.hidden === "true";
+        const ids = button.dataset.recordVisibility
+          ? [Number(button.dataset.recordId)]
+          : $$(`[data-select-record="${resource}"]:checked`)
+              .filter((input) => input.dataset.hidden !== button.dataset.hidden)
+              .map((input) => Number(input.dataset.recordId));
+        if (!ids.length) return;
+        await busy(button, async () => {
+          if (button.dataset.recordVisibility)
+            await write(
+              `/${resource}/${ids[0]}/visibility`,
+              { hidden },
+              "PATCH",
+            );
+          else await write(`/${resource}/visibility`, { ids, hidden });
+          await refreshVisibility(resource);
+          $(`[data-visibility-filter="${resource}"]`)?.focus({
+            preventScroll: true,
+          });
+          toast(
+            `${ids.length} ${resource === "products" ? "product" : "review record"}${ids.length === 1 ? "" : "s"} ${hidden ? "hidden. Choose Hidden to restore." : "restored to the visible list."}`,
+          );
+        });
+        return;
+      }
       if (button.dataset.scroll) {
         event.preventDefault();
         document
@@ -1108,25 +1678,48 @@
         );
         state.liveJob = j;
         state.mode = "live";
+        state.source = "";
         state.query = j.query;
         state.offset = 0;
         location.hash = "discover";
         return;
       }
       if (button.dataset.retryJob) {
-        const j = state.jobs.find(
-          (j) => String(j.id) === button.dataset.retryJob,
-        );
-        await write("/jobs", {
-          kind: j.kind,
-          query: j.query,
-          tracker_id: j.tracker_id,
-        });
+        const j =
+          state.jobs.find((j) => String(j.id) === button.dataset.retryJob) ||
+          (String(state.liveJob?.id) === button.dataset.retryJob
+            ? state.liveJob
+            : null);
+        if (!j) return;
+        const queued =
+          j.kind === "details"
+            ? await write(`/products/${j.payload.product_id}/details`)
+            : await write("/jobs", {
+                kind: j.kind,
+                query: j.query,
+                tracker_id: j.tracker_id,
+              });
         toast("A new collection job is queued.");
-        await renderActivity();
+        if (state.route === "discover") {
+          state.liveJob = queued;
+          renderLiveJob();
+          await loadProducts();
+        } else await renderActivity();
         return;
       }
       switch (action) {
+        case "retry-tracker-save":
+          await confirmTrackerSave(button.dataset.trackerId);
+          break;
+        case "refresh-details":
+          await requestProductDetails();
+          break;
+        case "details-connect":
+          $("#product-details-dialog").close();
+          $("#connection-panel").hidden = false;
+          renderConnection();
+          $("#connection-panel").scrollIntoView({ behavior: "smooth" });
+          break;
         case "connect":
           $("#connection-panel").hidden = false;
           renderConnection();
@@ -1178,7 +1771,9 @@
           button.setAttribute("aria-expanded", String(open));
           break;
         }
+        case "clear-live-filters":
         case "clear-filters":
+          if (action === "clear-live-filters") state.productVisibility = "all";
           state.source = "";
           state.tracker = "";
           state.freshness = "";
@@ -1189,6 +1784,7 @@
         case "dismiss-live":
           state.liveJob = null;
           $("#live-job").innerHTML = "";
+          await loadProducts();
           break;
         case "new-tracker":
           renderTrackerEditor();
@@ -1360,5 +1956,8 @@
       );
     }
   }
+  $("#product-details-dialog").addEventListener("close", () => {
+    state.details = null;
+  });
   init();
 })();
