@@ -4,7 +4,7 @@ Find the Vine products worth paying attention to, from your own server.
 
 VineSearch is a self-hosted discovery and review-progress dashboard for one Amazon.com Vine account. It searches collected history, queues fresh Additional Items searches, watches RFY/AFA, and ranks products against editable interests. A dedicated server browser handles collection, so your everyday browser can stay closed.
 
-Version 0.1.1 adds corrections from actual account use: complete searches, review pictures, hide/restore controls, product-specific links and details, and help inside the app. Actual Amazon login and catalog/review collection were verified on 0.1.0; the [release verification report](docs/release-verification.md) records the current version's checks separately.
+Version 0.1.1 adds corrections from actual account use: complete searches, review pictures, hide/restore controls, product-specific links and details, and help inside the app. The existing-account upgrade, complete live search and item-details lookup are verified on 0.1.1; fresh-install/recovery verification for this patch remains pending in the [release verification report](docs/release-verification.md).
 
 ![VineSearch discovery on desktop, showing labeled synthetic example products](docs/images/discovery-desktop.png)
 
@@ -42,7 +42,7 @@ The script pulls `ghcr.io/sageframe-no-kaji/vine-search:0.1.1`, creates a privat
 internal service key and starts the web and collector roles. It needs no Python,
 source checkout, Amazon credentials in the terminal, or registry login. Existing
 configuration is preserved. The [release](https://github.com/sageframe-no-kaji/vine-search/releases/tag/v0.1.1)
-includes checksums and corresponding third-party source assets.
+includes installation checksums and links to the corresponding third-party source evidence.
 
 Open [the local dashboard](http://127.0.0.1:8765) and choose Connect Amazon. Data and
 session volumes persist across container restarts. For phone access, bind to the

@@ -1,10 +1,27 @@
 # Version 0.1.1 verification
 
-Status: implementation under verification. The deployed 0.1.0 prerelease remains
-available while this patch is checked. Its separate [historical report](release-verification-0.1.0.md)
-records actual Amazon login, session reuse, RFY/AFA collection, an eight-page
-USB search with 260 observations, and a bounded review sync. Those observations
-do not establish that this patch's new product-details adapter works live.
+Status: deployed and verified on the existing private installation on 2026-10-20.
+The operator requested stopping at the running update; fresh 0.1.1 installation/
+recovery and the remaining AMD64 audit are still pending. This is a prerelease,
+not a claim that every distribution gate is complete. The separate
+[0.1.0 report](release-verification-0.1.0.md) retains its historical evidence.
+
+Runtime source: `fc4eedd47ad75a677ee1ec709fb54cc4775ef19e`.
+[CI](https://github.com/sageframe-no-kaji/vine-search/actions/runs/39484247316) and
+[native image publication](https://github.com/sageframe-no-kaji/vine-search/actions/runs/39484246991)
+passed. The immutable image index is
+`sha256:1497e3b8f64981afa962b2cf2b329187ab5b38543a08317c7231ff676e810742`.
+
+Actual running-service verification passed in 27.839 seconds: RFY 7 items/1 page,
+AFA 17/1, USB 259/8 with complete pagination, and reviews 92/10 with explicitly
+incomplete coverage at the configured review limit. A separate product-details
+job verified the stored ASIN and returned a description and observed taxable value.
+No product was requested and no review was submitted.
+
+The upgrade took a private backup, migrated schema 2 to 3 and verified unchanged
+settings, tracker records, product identities/first-seen dates and local review
+progress. The initial connection check requested login; opening the normal login
+flow reused the saved session and confirmed Vine access without credential entry.
 
 ## Changes being accepted
 
@@ -28,10 +45,10 @@ submissions. Live verification can use the running service's protected queue.
 | Schema 1/2 to 3 migration | Targeted tests pass | Preserves observations, progress and prior notification identity |
 | Tracker save and reload | Regression checks pass; original cause unconfirmed | Failed requests and accepted-but-unconfirmed saves preserve entries; returned identity confirmed in fresh list; navigation cannot duplicate an in-flight create |
 | Fresh published image install, restart, crash, backup and restore | Pending | Must use the new artifact and fresh volumes |
-| Both architecture inventories and dependency audit | Pending | Prior image's audit is not reused without comparing the actual new artifacts |
-| Publication and anonymous image/asset access | Pending | New patch artifact not yet published |
-| Upgrade with existing session/settings/history | Pending | Preserve user data; backup first; do not restart active work |
-| Actual Amazon search/reviews and new details lookup | Pending | Verify the deployed patch through its single browser owner |
+| Both architecture inventories and dependency audit | ARM64 complete; AMD64 audit pending | ARM64 inventories match its previous artifact; same 95 high/critical occurrences across 37 CVEs, no new or removed findings |
+| Publication and anonymous image/asset access | Published prerelease | Both native images published; ARM64 anonymous immutable pull verified; fresh public-bundle installation remains pending |
+| Upgrade with existing session/settings/history | Pass | Private backup, preserved records, schema migration, healthy services and saved-session reuse |
+| Actual Amazon search/reviews and new details lookup | Pass within stated scope | Complete USB pagination and exact-item details; review sync remains bounded and incomplete |
 | External notification destination | Not configured | No external destination supplied or message sent |
 | Physical phone | Not run | Resized browser evidence remains separate |
 
