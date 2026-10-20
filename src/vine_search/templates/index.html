@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#f4f5f7" />
+    <title>VineSearch · Discover</title>
+    <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+    <link rel="stylesheet" href="/static/app.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="app-header">
+      <a href="#discover" class="wordmark" aria-label="VineSearch home"
+        ><svg
+          width="26"
+          height="26"
+          viewBox="0 0 26 26"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M3 5h7v7H3zM16 5h7v7h-7zM3 18h7M16 18h7M13 3v20"
+            stroke="currentColor"
+            stroke-width="1.5"
+          /></svg
+        ><span>VineSearch</span></a
+      >
+      <nav aria-label="Main navigation" class="main-nav">
+        <a href="#discover" data-nav="discover">Discover</a>
+        <a href="#trackers" data-nav="trackers">Trackers</a>
+        <a href="#reviews" data-nav="reviews">Reviews</a>
+        <a href="#activity" data-nav="activity">Activity</a>
+        <a href="#settings" data-nav="settings">Settings</a>
+      </nav>
+      <button class="connection-button" id="connection-toggle" type="button">
+        <span class="status-dot" id="connection-dot"></span
+        ><span id="connection-label">Checking connection</span>
+      </button>
+    </header>
+    <div class="app-frame">
+      <div id="global-notice" class="notice" role="status" hidden></div>
+      <section
+        id="connection-panel"
+        class="connection-panel"
+        aria-labelledby="connection-title"
+        hidden
+      ></section>
+      <main id="main" tabindex="-1" aria-busy="true">
+        <div class="page-heading"><h1>Discover</h1></div>
+        <div class="skeleton" aria-label="Loading VineSearch">
+          <div></div>
+          <div></div>
+          <div></div>
+        </div>
+      </main>
+      <footer class="app-footer">
+        <span>Private, self-hosted discovery</span
+        ><span>Observations are not a promise of availability.</span>
+      </footer>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <dialog id="confirmation-dialog" aria-labelledby="confirmation-title">
+      <form method="dialog">
+        <h2 id="confirmation-title">Confirm action</h2>
+        <p id="confirmation-message"></p>
+        <label id="confirmation-label" hidden
+          >Type the confirmation<input
+            id="confirmation-input"
+            autocomplete="off"
+        /></label>
+        <div class="form-actions">
+          <button value="cancel" class="button">Cancel</button
+          ><button
+            value="confirm"
+            class="button primary"
+            id="confirmation-commit"
+          >
+            Confirm
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <noscript
+      ><p class="noscript">
+        Enable JavaScript to search, edit trackers and connect Amazon.
+        VineSearch uses local scripts without a third-party application service.
+      </p></noscript
+    >
+  </body>
+</html>

@@ -19,6 +19,9 @@ build/
 *.egg-info/
 .DS_Store
 .impeccable/review/
+.impeccable/hook.cache.json
+.impeccable/config.json
+.impeccable/surfaces/
 agent-tasks/
 prompts/
 *.sqlite*

@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-20T15:36:42+00:00",
+  "title": "Design System: VineSearch",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Working terracotta"
+      },
+      "ground": {
+        "role": "neutral",
+        "displayName": "Neutral ground"
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Near-white surface"
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Page heading",
+        "purpose": "Regular-weight serif page titles, with smaller fixed sizes on tablet and phone."
+      },
+      "body": {
+        "displayName": "Working text",
+        "purpose": "Labels, controls, product titles and explanation."
+      },
+      "metadata": {
+        "displayName": "Provenance",
+        "purpose": "Identifiers, scores and observation timestamps."
+      }
+    },
+    "shadows": [
+      {
+        "name": "toast",
+        "value": "0 4px 20px #1a1a1a20",
+        "purpose": "Transient status only; panels are flat."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-state",
+        "value": "160ms ease",
+        "purpose": "Color and border changes on controls."
+      },
+      {
+        "name": "skeleton",
+        "value": "1.2s ease-in-out infinite alternate",
+        "purpose": "Loading opacity repeats while loading; reduced motion disables animation."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "wide",
+        "value": "1350px",
+        "purpose": "Minimum width: four product columns."
+      },
+      {
+        "name": "compact-desktop",
+        "value": "1100px",
+        "purpose": "Maximum width: two product columns, narrower filter rail and gutters."
+      },
+      {
+        "name": "tablet",
+        "value": "800px",
+        "purpose": "Maximum width: second navigation row; tracker, settings and activity layouts stack."
+      },
+      {
+        "name": "phone",
+        "value": "600px",
+        "purpose": "Maximum width: horizontal product records, filter disclosure, labeled review records and single-column form fields."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Commit the current task.",
+      "html": "<button class=\"ds-primary\">Save settings</button>",
+      "css": ".ds-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:8px 14px;font:500 14px/1.3 var(--sans,'IBM Plex Sans',sans-serif);border:1px solid var(--rule,#d3d7dc);border-radius:var(--radius,3px);cursor:pointer;text-align:center;transition:background .16s,color .16s,border-color .16s;background:var(--accent,#a54420);color:var(--surface,#fbfcfd);border-color:var(--accent,#a54420)}.ds-primary:hover{background:var(--accent-hover,#793518);border-color:var(--accent-hover,#793518)}.ds-primary:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}.ds-primary:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-primary{transition:none}}"
+    },
+    {
+      "name": "Secondary button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A related task without competing with the primary action.",
+      "html": "<button class=\"ds-secondary\">Collect now</button>",
+      "css": ".ds-secondary{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:8px 14px;font:500 14px/1.3 var(--sans,'IBM Plex Sans',sans-serif);border:1px solid var(--rule,#d3d7dc);border-radius:var(--radius,3px);cursor:pointer;text-align:center;transition:background .16s,color .16s,border-color .16s;background:var(--surface,#fbfcfd);color:var(--accent,#a54420)}.ds-secondary:hover{background:var(--selected,#eceef1);color:var(--accent-hover,#793518);border-color:#a8adb5}.ds-secondary:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}.ds-secondary:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-secondary{transition:none}}"
+    },
+    {
+      "name": "Text field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "A labeled native input with deliberate focus and readable placeholder.",
+      "html": "<label class=\"ds-label\">Tracker name<input class=\"ds-input\" placeholder=\"Networking\"></label>",
+      "css": ".ds-label{display:flex;flex-direction:column;gap:6px;font:500 13px/1.5 var(--sans,'IBM Plex Sans',sans-serif);color:var(--ink,#1a1a1a)}.ds-input{background:var(--surface,#fbfcfd);color:var(--ink,#1a1a1a);border:1px solid #bfc5cd;border-radius:var(--radius,3px);padding:9px 11px;min-height:40px;max-width:100%;font:inherit;caret-color:var(--accent,#a54420)}.ds-input::placeholder{color:var(--muted,#60656c);opacity:1}.ds-input:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}"
+    },
+    {
+      "name": "Main navigation",
+      "kind": "nav",
+      "description": "Persistent labeled routes with a structural active rule.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Main navigation\"><a href=\"#discover\" aria-current=\"page\">Discover</a><a href=\"#trackers\">Trackers</a><a href=\"#reviews\">Reviews</a></nav>",
+      "css": ".ds-nav{display:flex;gap:25px;min-height:76px;font:500 14px/1.5 var(--sans,'IBM Plex Sans',sans-serif)}.ds-nav a{display:flex;align-items:center;position:relative;color:var(--muted,#60656c);text-decoration:none}.ds-nav a[aria-current=page]{color:var(--ink,#1a1a1a)}.ds-nav a[aria-current=page]:after{position:absolute;bottom:0;height:2px;content:'';background:var(--accent,#a54420);width:100%}.ds-nav a:hover{color:var(--ink,#1a1a1a)}.ds-nav a:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}@media(max-width:800px){.ds-nav{min-height:49px;gap:15px;justify-content:space-between;font-size:13px}}@media(max-width:600px){.ds-nav{min-height:46px;gap:8px;font-size:12px}}"
+    },
+    {
+      "name": "Rule tag",
+      "kind": "chip",
+      "description": "A noninteractive phrase in a tracker.",
+      "html": "<span class=\"ds-tag\">network switch</span>",
+      "css": ".ds-tag{display:inline-block;border:1px solid var(--rule,#d3d7dc);border-radius:2px;padding:3px 7px;color:var(--secondary,#4a4a4a);font:400 11px/1.5 var(--sans,'IBM Plex Sans',sans-serif)}"
+    },
+    {
+      "name": "Product record",
+      "kind": "card",
+      "refersTo": "product-card",
+      "description": "Product image or labeled unavailable state, observed source, title, rank reason and last observation.",
+      "html": "<article class=\"ds-product\"><div class=\"ds-product-image\"><span class=\"ds-image-empty\"><svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><rect x=\"4\" y=\"5\" width=\"24\" height=\"22\" rx=\"2\"/><circle cx=\"11\" cy=\"12\" r=\"2\"/><path d=\"m4 23 8-7 5 4 4-5 7 8\"/></svg><span>Image unavailable</span></span></div><div class=\"ds-product-body\"><div class=\"ds-product-source\">Additional items</div><h2><a href=\"https://www.amazon.com/vine/vine-items\" target=\"_blank\" rel=\"noopener noreferrer\">Example observed product</a></h2><p class=\"ds-product-category\">Category not observed</p><p class=\"ds-product-score\">40 match score · 1 tracker</p><p class=\"ds-product-reasons\">Phrase + freshness</p><footer><span>Seen 12m ago</span><a href=\"https://www.amazon.com/vine/vine-items\" target=\"_blank\" rel=\"noopener noreferrer\">Open on Amazon</a></footer></div></article>",
+      "css": ".ds-product{display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--surface,#fbfcfd);border:1px solid var(--rule,#d3d7dc);border-radius:var(--radius,3px);color:var(--ink,#1a1a1a);font:400 15px/1.5 var(--sans,'IBM Plex Sans',sans-serif)}.ds-product-image{display:flex;align-items:center;justify-content:center;height:180px;background:#eff1f4;border-bottom:1px solid var(--rule,#d3d7dc)}.ds-image-empty{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--muted,#60656c);font-size:11px}.ds-image-empty svg{width:34px;height:34px;stroke:#969ca5;stroke-width:1.2;fill:none}.ds-product-body{padding:16px;display:flex;flex-direction:column;flex:1}.ds-product-source{font:400 11px/1.5 var(--mono,'IBM Plex Mono',monospace);letter-spacing:.025em;color:var(--muted,#60656c);margin-bottom:8px}.ds-product h2{font:500 15px/1.45 var(--sans,'IBM Plex Sans',sans-serif);margin:0 0 8px;overflow-wrap:anywhere}.ds-product h2 a{color:var(--ink,#1a1a1a)}.ds-product-category{font-size:12px;color:var(--muted,#60656c);margin:0 0 10px}.ds-product-score,.ds-product-reasons{font-size:12px;color:var(--secondary,#4a4a4a)}.ds-product footer{border-top:1px solid var(--rule,#d3d7dc);padding-top:11px;display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted,#60656c)}.ds-product a{color:var(--accent,#a54420);text-decoration:none}.ds-product a:hover{color:var(--accent,#a54420);text-decoration:underline}.ds-product a:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}@media(max-width:600px){.ds-product{display:grid;grid-template-columns:112px minmax(0,1fr)}.ds-product-image{height:auto;min-height:180px;border-bottom:0;border-right:1px solid var(--rule,#d3d7dc)}.ds-product-body{padding:12px}.ds-product h2{font-size:14px}.ds-product footer{flex-wrap:wrap}}"
+    },
+    {
+      "name": "Subtle button",
+      "kind": "button",
+      "description": "A secondary text action within an existing group.",
+      "html": "<button class=\"ds-subtle\">Reset filters</button>",
+      "css": ".ds-subtle{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:8px 14px;font:500 14px/1.3 var(--sans,'IBM Plex Sans',sans-serif);border:1px solid var(--rule,#d3d7dc);border-radius:var(--radius,3px);cursor:pointer;text-align:center;transition:background .16s,color .16s,border-color .16s;padding-left:8px;padding-right:8px;background:transparent;border-color:transparent;color:var(--accent,#a54420)}.ds-subtle:hover{color:var(--accent-hover,#793518)}.ds-subtle:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}.ds-subtle:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-subtle{transition:none}}"
+    },
+    {
+      "name": "Destructive action",
+      "kind": "button",
+      "description": "A destructive operation with explicit confirmation in the application.",
+      "html": "<button class=\"ds-danger\">Apply cleanup</button>",
+      "css": ".ds-danger{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:40px;padding:8px 14px;font:500 14px/1.3 var(--sans,'IBM Plex Sans',sans-serif);border:1px solid var(--rule,#d3d7dc);border-radius:var(--radius,3px);cursor:pointer;text-align:center;transition:background .16s,color .16s,border-color .16s;background:var(--surface,#fbfcfd);color:var(--bad,#a02d2d)}.ds-danger:hover{background:var(--selected,#eceef1);border-color:#a8adb5}.ds-danger:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}.ds-danger:disabled{cursor:wait;opacity:.55}@media(prefers-reduced-motion:reduce){.ds-danger{transition:none}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The working catalog",
+    "overview": "The working catalog is the visual reference: products lead, controls remain familiar, and observed evidence has a stable place beside each item. Architectural alignment and modest typography carry the ATM identity without consuming the task space. Neutral ground and near-white card surfaces support product images, readable titles and useful filters.",
+    "keyCharacteristics": [
+      "Neutral surfaces",
+      "Architectural alignment",
+      "Visible provenance",
+      "Native working controls"
+    ],
+    "rules": [
+      {
+        "name": "No cream",
+        "body": "Cream, beige, parchment and warm-white surfaces are excluded.",
+        "section": "colors"
+      },
+      {
+        "name": "Visible evidence",
+        "body": "Coverage text names the recent source scopes and distinguishes mixed historical runs from one selected live-search run.",
+        "section": "components"
+      },
+      {
+        "name": "Keyboard and motion",
+        "body": "Keyboard users have a skip-to-content link, native form controls and a two-pixel focus outline with a three-pixel offset. Reduced-motion preferences disable transitions, skeleton animation and smooth scrolling.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do keep timestamps, scopes and partial-result states near their observations.",
+      "Do preserve neutral surfaces, local font delivery, visible keyboard focus and text-based state explanations.",
+      "Do let real product titles wrap and design the narrow layout structurally."
+    ],
+    "donts": [
+      "Don't substitute charts, marketing headlines or decorative metrics for discovery content.",
+      "Don't use bold DM Serif Display, rounded pill containers or cream backgrounds.",
+      "Don't use color alone for status, return stored secrets into forms, or call history results live inventory."
+    ]
+  }
+}

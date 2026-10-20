@@ -653,7 +653,12 @@ class Store:
         integer(pages, "pages", 0, 10000)
         if advertised is not None:
             integer(advertised, "advertised_count", 0, 10000000)
-        if job["status"] in TERMINAL_STATUSES:
+        cancelled_capture = (
+            job["status"] == status == "cancelled"
+            and job["started_at"] is not None
+            and db.execute("SELECT 1 FROM runs WHERE job_id=?", (job["id"],)).fetchone() is None
+        )
+        if job["status"] in TERMINAL_STATUSES and not cancelled_capture:
             raise ValueError("Job already completed")
         scope = job["kind"] + (":" + normalized(job["query"]) if job["query"] else "")
         cursor = db.execute(
