@@ -1,0 +1,26 @@
+# Private process/state and runtime data; public documentation lives outside these directories.
+ho-process/
+metadata/
+data/
+.env
+.env.*
+!.env.example
+prompts/ntfy-topic.txt
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+*.egg-info/
+.DS_Store
+.impeccable/review/
+agent-tasks/
+prompts/
+*.sqlite*
+*.db
+*.log
