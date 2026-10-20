@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-20T15:36:42+00:00",
+  "generatedAt": "2026-10-20T20:23:43+00:00",
   "title": "Design System: VineSearch",
   "extensions": {
     "colorMeta": {
@@ -121,7 +121,7 @@
       "kind": "card",
       "refersTo": "product-card",
       "description": "Product image or labeled unavailable state, observed source, title, rank reason and last observation.",
-      "html": "<article class=\"ds-product\"><div class=\"ds-product-image\"><span class=\"ds-image-empty\"><svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><rect x=\"4\" y=\"5\" width=\"24\" height=\"22\" rx=\"2\"/><circle cx=\"11\" cy=\"12\" r=\"2\"/><path d=\"m4 23 8-7 5 4 4-5 7 8\"/></svg><span>Image unavailable</span></span></div><div class=\"ds-product-body\"><div class=\"ds-product-source\">Additional items</div><h2><a href=\"https://www.amazon.com/vine/vine-items\" target=\"_blank\" rel=\"noopener noreferrer\">Example observed product</a></h2><p class=\"ds-product-category\">Category not observed</p><p class=\"ds-product-score\">40 match score · 1 tracker</p><p class=\"ds-product-reasons\">Phrase + freshness</p><footer><span>Seen 12m ago</span><a href=\"https://www.amazon.com/vine/vine-items\" target=\"_blank\" rel=\"noopener noreferrer\">Open on Amazon</a></footer></div></article>",
+      "html": "<article class=\"ds-product\"><div class=\"ds-product-image\"><span class=\"ds-image-empty\"><svg viewBox=\"0 0 32 32\" aria-hidden=\"true\"><rect x=\"4\" y=\"5\" width=\"24\" height=\"22\" rx=\"2\"/><circle cx=\"11\" cy=\"12\" r=\"2\"/><path d=\"m4 23 8-7 5 4 4-5 7 8\"/></svg><span>Image unavailable</span></span></div><div class=\"ds-product-body\"><div class=\"ds-product-source\">Additional items</div><h2><a href=\"https://www.amazon.com/vine/vine-items\" target=\"_blank\" rel=\"noopener noreferrer\">Example observed product</a></h2><p class=\"ds-product-category\">Category not observed</p><p class=\"ds-product-score\">40 match score \u00b7 1 tracker</p><p class=\"ds-product-reasons\">Phrase + freshness</p><footer><span>Seen 12m ago</span><a href=\"https://www.amazon.com/vine/vine-items\" target=\"_blank\" rel=\"noopener noreferrer\">Open on Amazon</a></footer></div></article>",
       "css": ".ds-product{display:flex;flex-direction:column;min-width:0;overflow:hidden;background:var(--surface,#fbfcfd);border:1px solid var(--rule,#d3d7dc);border-radius:var(--radius,3px);color:var(--ink,#1a1a1a);font:400 15px/1.5 var(--sans,'IBM Plex Sans',sans-serif)}.ds-product-image{display:flex;align-items:center;justify-content:center;height:180px;background:#eff1f4;border-bottom:1px solid var(--rule,#d3d7dc)}.ds-image-empty{display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--muted,#60656c);font-size:11px}.ds-image-empty svg{width:34px;height:34px;stroke:#969ca5;stroke-width:1.2;fill:none}.ds-product-body{padding:16px;display:flex;flex-direction:column;flex:1}.ds-product-source{font:400 11px/1.5 var(--mono,'IBM Plex Mono',monospace);letter-spacing:.025em;color:var(--muted,#60656c);margin-bottom:8px}.ds-product h2{font:500 15px/1.45 var(--sans,'IBM Plex Sans',sans-serif);margin:0 0 8px;overflow-wrap:anywhere}.ds-product h2 a{color:var(--ink,#1a1a1a)}.ds-product-category{font-size:12px;color:var(--muted,#60656c);margin:0 0 10px}.ds-product-score,.ds-product-reasons{font-size:12px;color:var(--secondary,#4a4a4a)}.ds-product footer{border-top:1px solid var(--rule,#d3d7dc);padding-top:11px;display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted,#60656c)}.ds-product a{color:var(--accent,#a54420);text-decoration:none}.ds-product a:hover{color:var(--accent,#a54420);text-decoration:underline}.ds-product a:focus-visible{outline:2px solid var(--accent,#a54420);outline-offset:3px}@media(max-width:600px){.ds-product{display:grid;grid-template-columns:112px minmax(0,1fr)}.ds-product-image{height:auto;min-height:180px;border-bottom:0;border-right:1px solid var(--rule,#d3d7dc)}.ds-product-body{padding:12px}.ds-product h2{font-size:14px}.ds-product footer{flex-wrap:wrap}}"
     },
     {
@@ -162,6 +162,21 @@
       {
         "name": "Keyboard and motion",
         "body": "Keyboard users have a skip-to-content link, native form controls and a two-pixel focus outline with a three-pixel offset. Reduced-motion preferences disable transitions, skeleton animation and smooth scrolling.",
+        "section": "components"
+      },
+      {
+        "name": "Product details and local visibility",
+        "body": "Product cards separate Open product from See details. The latter uses a native read-only dialog with queued, running, observed and unavailable states; an unknown ETV remains explicitly unavailable. Selection checkboxes and a selected-item toolbar support hide/restore on the displayed page. Review rows include thumbnails under the same image policy and retain separate observed status and local progress.",
+        "section": "components"
+      },
+      {
+        "name": "Help and tracker save confirmation",
+        "body": "Help has directly addressable topics for discovery, trackers, literal matching, scoring, schedules, notifications, connection, reviews, visibility and recovery. Contextual links open help separately to preserve an active form. The tracker editor brings invalid fields into view, keeps drafts while moving between app views, and confirms the saved identity in a fresh list read before announcing success. A pending confirmation retains entries and offers a list refresh rather than another create request.",
+        "section": "components"
+      },
+      {
+        "name": "Search scope and filtered counts",
+        "body": "Discovery labels queue refresh and query search separately. Search help states that both manual and scheduled searches traverse all exposed result pages; queue and review bounds are described only where they apply. Live-result counts separate captured inventory from the current filtered view, with a direct filter reset.",
         "section": "components"
       }
     ],
