@@ -3,6 +3,7 @@
 import fcntl
 import io
 import json
+import os
 import tarfile
 from pathlib import Path
 
@@ -50,6 +51,25 @@ def test_backup_refuses_active_collector_and_missing_db(tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Stop the collector"):
             create_backup(data, session, tmp_path / "no.tgz")
         fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def test_restore_across_filesystems(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Docker's tmpfs staging and persistent data volume cannot be renamed across."""
+    seed_demo(tmp_path / "source")
+    archive = create_backup(tmp_path / "source", tmp_path / "session", tmp_path / "backup.tgz")
+    original_replace = os.replace
+
+    def cross_device_replace(source: str | Path, target: str | Path) -> None:
+        if Path(source).parent != Path(target).parent:
+            raise OSError(18, "Invalid cross-device link")
+        original_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", cross_device_replace)
+    restored = tmp_path / "restored"
+    restore_backup(archive, restored, tmp_path / "restored-session")
+    assert Store(restored / "vine-search.sqlite3").list_reviews()["total"] == 4
+    assert (restored / "vine-search.sqlite3").stat().st_mode & 0o777 == 0o600
+    assert not list(restored.glob(".restore-*"))
 
 
 @pytest.mark.parametrize("entry", ["../escape", "/tmp/escape", "unknown", "session/../../escape"])

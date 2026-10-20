@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 import time
+from ipaddress import IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
@@ -18,6 +19,33 @@ IMAGE_HOSTS = frozenset(
         "images.amazon.com",
     }
 )
+ClientNetwork = IPv4Network | IPv6Network
+
+
+def client_networks(entries: tuple[str, ...]) -> tuple[ClientNetwork, ...]:
+    """Validate deployment IPs/CIDRs before serving any requests."""
+    try:
+        return tuple(ip_network(entry.strip()) for entry in entries)
+    except ValueError as exc:
+        raise ValueError(
+            "VINE_SEARCH_ALLOWED_CLIENTS must contain comma-separated IP addresses "
+            "or CIDRs with their host bits cleared."
+        ) from exc
+
+
+def client_allowed(host: str | None, networks: tuple[ClientNetwork, ...]) -> bool:
+    """Check the connection peer, never an HTTP forwarding header."""
+    if not networks:
+        return True
+    if host is None:
+        return False
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(address, IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return any(address in network for network in networks)
 
 
 def csrf_token(secret: str) -> str:

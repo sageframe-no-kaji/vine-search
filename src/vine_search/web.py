@@ -25,6 +25,8 @@ from vine_search.security import (
     CSRF_COOKIE,
     LOGIN_COOKIE,
     check_write,
+    client_allowed,
+    client_networks,
     csrf_token,
     image_url_allowed,
     valid_csrf,
@@ -38,6 +40,7 @@ Json = dict[str, Any]
 def create_app(config: Config | None = None, store: Store | None = None) -> FastAPI:
     """Build an application with explicit, testable storage and service boundaries."""
     cfg = config or Config()
+    allowed_clients = client_networks(cfg.allowed_clients)
     cfg.prepare()
     db = store or Store(cfg.database)
 
@@ -57,6 +60,8 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
     async def boundaries(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
+        if not client_allowed(request.client.host if request.client else None, allowed_clients):
+            return JSONResponse({"detail": "Client address is not allowed."}, status_code=403)
         if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
             try:
                 check_write(request, cfg.collector_secret)
@@ -125,7 +130,11 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
         if value.get("id"):
             login_id = str(value["id"])
             value["viewer_path"] = f"/login-viewer/{login_id}/vnc.html?" + urlencode(
-                {"autoconnect": 1, "resize": "scale", "path": f"login-viewer/{login_id}/websockify"}
+                {
+                    "autoconnect": 1,
+                    "resize": "scale",
+                    "path": f"/login-viewer/{login_id}/websockify",
+                }
             )
         return value
 
@@ -407,6 +416,9 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
 
     @app.websocket("/login-viewer/{login_id}/websockify")
     async def viewer_socket(socket: WebSocket, login_id: str) -> None:
+        if not client_allowed(socket.client.host if socket.client else None, allowed_clients):
+            await socket.close(code=1008)
+            return
         capability = socket.cookies.get(LOGIN_COOKIE, "")
         origin = socket.headers.get("origin")
         scheme = "https" if socket.url.scheme == "wss" else "http"

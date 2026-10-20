@@ -21,6 +21,13 @@ class Config:
             os.getenv("VINE_SEARCH_ALLOWED_HOSTS", "localhost,127.0.0.1,::1").split(",")
         )
     )
+    allowed_clients: tuple[str, ...] = field(
+        default_factory=lambda: (
+            tuple(os.environ["VINE_SEARCH_ALLOWED_CLIENTS"].split(","))
+            if os.getenv("VINE_SEARCH_ALLOWED_CLIENTS", "").strip()
+            else ()
+        )
+    )
 
     @property
     def database(self) -> Path:

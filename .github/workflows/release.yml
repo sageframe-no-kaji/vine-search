@@ -1,0 +1,48 @@
+name: Publish container
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version, matching the reviewed application version"
+        required: true
+        default: "0.1.0"
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re, tomllib
+          version = os.environ["INPUT_VERSION"]
+          expected = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          assert re.fullmatch(r"\d+\.\d+\.\d+(?:[.-][a-zA-Z0-9.]+)?", version)
+          assert version == expected, f"Requested {version}, source declares {expected}"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"version={version}\n")
+          PY
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MIT
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

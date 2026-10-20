@@ -4,7 +4,7 @@ Find the Vine products worth paying attention to, from your own server.
 
 VineSearch is a self-hosted discovery and review-progress dashboard for one Amazon.com Vine account. It searches collected history, queues fresh Additional Items searches, watches RFY/AFA, and ranks products against editable interests. A dedicated server browser handles collection, so your everyday browser can stay closed.
 
-Version 0.1.0 is undergoing release verification. The implemented interface and synthetic tests are available; live Amazon verification, the public image installation and final independent review are recorded separately in [release verification](docs/release-verification.md). This status will change only when those checks have evidence.
+Version 0.1.0 is a prerelease candidate. The complete interface and automated workflows are implemented, but actual Amazon login and collection have not been verified with an authorized account. Use the [release verification report](docs/release-verification.md) to distinguish tested behavior from that remaining acceptance gate.
 
 ![VineSearch discovery on desktop, showing labeled synthetic example products](docs/images/discovery-desktop.png)
 
@@ -22,7 +22,33 @@ Trackers combine positive phrases, any/all matching, exclusions, observed catego
 
 Review progress shows order age, variants, observed Amazon status and local progress separately. A local “marked submitted” action does not submit a review or prove Amazon approval. Import/export handles a previewed metadata whitelist and excludes drafts, review bodies, notes, photos and credentials.
 
-## Run from source
+## Install
+
+Install Docker Engine with Compose or Docker Desktop. Download the versioned
+[installation bundle](https://github.com/sageframe-no-kaji/vine-search/releases/tag/v0.1.0)
+into a new directory:
+
+```sh
+mkdir vine-search
+cd vine-search
+curl -fLO https://github.com/sageframe-no-kaji/vine-search/releases/download/v0.1.0/vine-search-0.1.0.tar.gz
+tar -xzf vine-search-0.1.0.tar.gz
+sh docker/install.sh
+```
+
+The script pulls `ghcr.io/sageframe-no-kaji/vine-search:0.1.0`, creates a private
+internal service key and starts the web and collector roles. It needs no Python,
+source checkout, Amazon credentials in the terminal, or registry login. Existing
+configuration is preserved. The [release](https://github.com/sageframe-no-kaji/vine-search/releases/tag/v0.1.0)
+includes checksums and corresponding third-party source assets.
+
+Open [the local dashboard](http://127.0.0.1:8765) and choose Connect Amazon. Data and
+session volumes persist across container restarts. For phone access, bind to the
+server's private Tailscale address and allow its exact hostname. The
+[operation guide](docs/operations.md) covers private access, connect/reconnect,
+updates, backup/restore and troubleshooting.
+
+## Build from source
 
 The current source installation requires Docker with Compose and uv for setup. From this checkout:
 
@@ -33,7 +59,8 @@ docker compose build
 docker compose up -d
 ```
 
-Open [the local dashboard](http://127.0.0.1:8765). Setup creates a private internal key; Compose starts separate web and collector roles with persistent data and session volumes. For phone access, bind to the server’s private Tailscale address and allow its exact hostname. The [operation guide](docs/operations.md) covers private access, connect/reconnect, updates, backup/restore and troubleshooting.
+The source build uses the same two roles and persistent volumes as the published
+image. Development commands require Python 3.12 and uv.
 
 ## Behavior you can change
 

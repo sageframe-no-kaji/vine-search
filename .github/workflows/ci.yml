@@ -1,0 +1,51 @@
+name: Verify
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - run: uv sync --locked --dev
+      - run: uv run playwright install --with-deps chromium
+      - run: uv run ruff check .
+      - run: uv run mypy src
+      - run: mkdir -p data && uv run pytest --cov-report=json:data/coverage.json
+      - run: uv run python -m vine_search.verify --mode fixture --report data/fixture-verification.json
+      - run: uv run pip-audit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: synthetic-verification
+          path: |
+            data/coverage.json
+            data/fixture-verification.json
+            data/fixture-verification.log
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run python -m vine_search setup
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - run: docker compose up -d --wait
+      - run: curl --fail http://127.0.0.1:8765/health
+      - run: docker compose exec -T collector python /app/docker/verify-login.py
+      - run: docker compose restart && docker compose up -d --wait
+      - run: curl --fail http://127.0.0.1:8765/health
+      - run: docker compose logs --tail=100
+        if: failure()
+      - run: docker compose down
+        if: always()

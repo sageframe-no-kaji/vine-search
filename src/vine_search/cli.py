@@ -29,6 +29,7 @@ def setup(directory: Path = Path(".")) -> None:
         "VINE_SEARCH_DATA_DIR=./data/app\nVINE_SEARCH_SESSION_DIR=./data/session\n"
         f"VINE_SEARCH_COLLECTOR_SECRET={secrets.token_urlsafe(48)}\n"
         "VINE_SEARCH_ALLOWED_HOSTS=localhost,127.0.0.1,::1\n"
+        "VINE_SEARCH_ALLOWED_CLIENTS=\n"
     )
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "w") as target:
@@ -44,7 +45,7 @@ def web(
     """Serve the private dashboard."""
     from vine_search.web import create_app
 
-    uvicorn.run(create_app(), host=host, port=port, access_log=False)
+    uvicorn.run(create_app(), host=host, port=port, access_log=False, proxy_headers=False)
 
 
 @app.command()

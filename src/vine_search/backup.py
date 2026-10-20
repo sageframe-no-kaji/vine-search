@@ -3,6 +3,7 @@
 import fcntl
 import json
 import os
+import shutil
 import tarfile
 import tempfile
 from collections.abc import Iterator
@@ -107,11 +108,24 @@ def restore_backup(archive_path: Path, data_dir: Path, session_dir: Path) -> Non
         Store.restore(staging / "app/vine-search.sqlite3", validated)
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.replace(validated, data_dir / "vine-search.sqlite3")
+        # /tmp and /data are separate mounts in Docker. Publish only after a
+        # complete copy into a temporary file on the destination filesystem.
+        with tempfile.NamedTemporaryFile(dir=data_dir, prefix=".restore-", delete=False) as staged:
+            staged_database = Path(staged.name)
+            try:
+                with validated.open("rb") as source:
+                    shutil.copyfileobj(source, staged)
+                staged.flush()
+                os.fsync(staged.fileno())
+            except BaseException:
+                staged_database.unlink(missing_ok=True)
+                raise
+        try:
+            os.replace(staged_database, data_dir / "vine-search.sqlite3")
+        finally:
+            staged_database.unlink(missing_ok=True)
         restored_session = staging / "session"
         if restored_session.exists():
-            import shutil
-
             shutil.copytree(restored_session, session_dir, dirs_exist_ok=True)
         for item in session_dir.rglob("*"):
             item.chmod(0o700 if item.is_dir() else 0o600)

@@ -1,5 +1,13 @@
 # Installation and operation
 
+## Published image
+
+Download and unpack the versioned installation bundle linked in the README, then
+run `sh docker/install.sh` from that directory. It uses the published image for
+configuration creation and both runtime roles, so the host needs Docker and
+Compose without Python or a developer checkout. The bundle includes the Chromium
+security profile required by Compose. Keep those files together when updating.
+
 ## Local source build
 
 Use Docker Engine with Compose, or Docker Desktop on a Mac. The browser needs
@@ -50,9 +58,29 @@ address and include that address and the exact private DNS name in
 rules must restrict this service to its operator. Do not bind the dashboard to a
 public interface or publish the login service/VNC ports.
 
-For HTTPS, place an authenticated private reverse proxy in front of the dashboard.
-Forward WebSocket upgrades and retain the original Host header. The login viewer
-resolves against the application origin, including on phones.
+Set `VINE_SEARCH_ALLOWED_CLIENTS` to a comma-separated list of the operator's
+device IPs or trusted CIDR networks to enforce that boundary in the application
+as well. For example,
+`127.0.0.1/32,::1/128,100.100.100.10/32` permits loopback health checks and one
+operator device; replace the example address with the actual device address.
+Include each required IPv4/IPv6 address and keep both loopback entries for health
+checks. Empty means no application client-address restriction, while invalid
+addresses or CIDRs fail startup. Use network addresses with host bits cleared
+for CIDRs, such as `192.0.2.0/24`.
+
+The allowlist covers all HTTP routes and the login-viewer WebSocket. It uses the
+connection peer address and ignores `X-Forwarded-For`, `Forwarded` and similar
+headers; IPv4-mapped IPv6 peers are matched against their IPv4 address. The shipped
+web command disables Uvicorn proxy-header processing, and custom ASGI launchers
+must also disable it to preserve this boundary.
+
+The supported transport configuration is HTTP inside the encrypted Tailscale or
+SSH connection. HTTPS termination by a reverse proxy needs additional explicit
+origin configuration: current same-origin checks compare the browser origin with
+the application's connection scheme, and forwarded scheme headers are ignored.
+Do not re-enable arbitrary forwarding headers to work around that mismatch.
+Any reverse proxy must enforce its own operator authentication or network policy,
+because the application allowlist sees the proxy's connection address.
 
 ## Settings and schedules
 

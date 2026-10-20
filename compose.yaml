@@ -1,0 +1,71 @@
+name: vine-search
+
+x-common: &common
+  image: ${VINE_SEARCH_IMAGE:-ghcr.io/sageframe-no-kaji/vine-search:0.1.0}
+  init: true
+  restart: unless-stopped
+  user: "1000:1000"
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+    - /home/vine:size=32m,uid=1000,gid=1000,mode=700
+  cap_drop: [ALL]
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "2"
+
+services:
+  web:
+    <<: *common
+    command: ["web"]
+    environment:
+      VINE_SEARCH_DATA_DIR: /data
+      VINE_SEARCH_COLLECTOR_URL: http://collector:8766
+      VINE_SEARCH_COLLECTOR_SECRET: ${VINE_SEARCH_COLLECTOR_SECRET:?Generate a private service secret in .env}
+      VINE_SEARCH_BIND: 0.0.0.0
+      VINE_SEARCH_PORT: 8765
+      VINE_SEARCH_ALLOWED_HOSTS: ${VINE_SEARCH_ALLOWED_HOSTS:-localhost,127.0.0.1,::1}
+      VINE_SEARCH_ALLOWED_CLIENTS: ${VINE_SEARCH_ALLOWED_CLIENTS:-}
+    ports:
+      - "${VINE_SEARCH_BIND:-127.0.0.1}:${VINE_SEARCH_PORT:-8765}:8765"
+    volumes:
+      - data:/data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "/app/docker/healthcheck.py", "web"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    depends_on:
+      collector:
+        condition: service_healthy
+
+  collector:
+    <<: *common
+    build: .
+    command: ["collector"]
+    environment:
+      VINE_SEARCH_DATA_DIR: /data
+      VINE_SEARCH_SESSION_DIR: /session
+      VINE_SEARCH_COLLECTOR_SECRET: ${VINE_SEARCH_COLLECTOR_SECRET:?Generate a private service secret in .env}
+    volumes:
+      - data:/data
+      - session:/session
+    shm_size: "512m"
+    security_opt:
+      - seccomp:./docker/seccomp-chromium.json
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "/app/docker/healthcheck.py", "collector"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  data:
+  session:

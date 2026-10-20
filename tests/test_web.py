@@ -240,6 +240,8 @@ def test_login_lifecycle_capabilities_not_returned(
     assert "private-capability" not in started.text
     assert "HttpOnly" in started.headers["set-cookie"]
     assert started.json()["viewer_path"].startswith("/login-viewer/")
+    viewer_url = httpx.URL("http://testserver" + started.json()["viewer_path"])
+    assert viewer_url.params["path"] == "/login-viewer/session123/websockify"
     assert client.get("/login-viewer/session123/vnc.html").text == "served viewer"
     assert client.get("/api/connection/login/session123").json()["state"] == "connected"
     assert client.post("/api/connection/login/session123/cancel").status_code == 200
