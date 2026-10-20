@@ -8,19 +8,18 @@ on:
         default: "0.1.0"
 permissions:
   contents: read
-  packages: write
+concurrency:
+  group: publish-container-${{ inputs.version }}
+  cancel-in-progress: false
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      image: ${{ steps.version.outputs.image }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - id: version
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -33,16 +32,142 @@ jobs:
           assert version == expected, f"Requested {version}, source declares {expected}"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"version={version}\n")
+              output.write(f"image=ghcr.io/{os.environ['GITHUB_REPOSITORY'].lower()}\n")
           PY
-      - uses: docker/build-push-action@v6
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native runner architecture
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: test "$(uname -m)" = "$EXPECTED_MACHINE"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+          platforms: linux/${{ matrix.arch }}
+          # Publish immutable digests; only the merge job writes the version tag.
+          outputs: type=image,name=${{ needs.version.outputs.image }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=MIT
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+      - name: Record immutable image digest
+        env:
+          IMAGE: ${{ needs.version.outputs.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re
+          assert re.fullmatch(r"sha256:[0-9a-f]{64}", os.environ["DIGEST"])
+          directory = pathlib.Path("digests")
+          directory.mkdir()
+          record = {key.lower(): os.environ[key] for key in ("IMAGE", "VERSION", "ARCH", "DIGEST")}
+          record["revision"] = os.environ["GITHUB_SHA"]
+          record["run_id"] = os.environ["GITHUB_RUN_ID"]
+          (directory / f"{record['arch']}.json").write_text(json.dumps(record))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 7
+          # A rerun replaces only its own architecture's artifact in this run.
+          overwrite: true
+
+  merge:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate digests and publish both architectures
+        env:
+          IMAGE: ${{ needs.version.outputs.image }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, re, subprocess
+          image, version = os.environ["IMAGE"], os.environ["VERSION"]
+          directory = pathlib.Path("digests")
+          assert {path.name for path in directory.iterdir()} == {"amd64.json", "arm64.json"}
+          references = []
+          for arch in ("amd64", "arm64"):
+              record = json.loads((directory / f"{arch}.json").read_text())
+              expected = {
+                  "image": image, "version": version, "arch": arch,
+                  "revision": os.environ["GITHUB_SHA"], "run_id": os.environ["GITHUB_RUN_ID"],
+              }
+              assert all(record.get(key) == value for key, value in expected.items())
+              assert re.fullmatch(r"sha256:[0-9a-f]{64}", record["digest"])
+              references.append(f"{image}@{record['digest']}")
+
+          def verify_platforms(raw):
+              manifest = json.loads(raw)
+              platforms = []
+              for entry in manifest["manifests"]:
+                  platform = entry.get("platform", {})
+                  pair = (platform.get("os"), platform.get("architecture"))
+                  if pair == ("unknown", "unknown"):
+                      assert entry.get("annotations", {}).get(
+                          "vnd.docker.reference.type"
+                      ) == "attestation-manifest"
+                  else:
+                      platforms.append(pair)
+              assert sorted(platforms) == [("linux", "amd64"), ("linux", "arm64")], platforms
+
+          command = ["docker", "buildx", "imagetools", "create"]
+          preview = subprocess.check_output([*command, "--dry-run", *references], text=True)
+          verify_platforms(preview)
+          tag = f"{image}:{version}"
+          subprocess.run([*command, "--tag", tag, *references], check=True)
+          published = subprocess.check_output(
+              ["docker", "buildx", "imagetools", "inspect", "--raw", tag], text=True
+          )
+          verify_platforms(published)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"Published `{tag}` from native AMD64 and ARM64 builds.\n\n")
+              for reference in references:
+                  summary.write(f"- `{reference}`\n")
+          PY
