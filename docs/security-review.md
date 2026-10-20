@@ -2,15 +2,17 @@
 
 The initial Debian 12 image was rejected after Trivy 0.76.0 reported 185 high/critical
 package occurrences. The rebuilt Debian 13 image removes unnecessary Debian
-Node/Pillow package dependencies and upgrades installed system packages. Its audit
-reports 95 occurrences across 37 unique CVEs: 94 high and 1 critical. None of these
+Node/Pillow package dependencies and upgrades installed system packages. Each
+published platform audit reports 95 occurrences across 37 unique CVEs: 94 high and
+1 critical. None of these
 records contains a `FixedVersion` for Debian 13 at the scan capture; this does not
 mean upstream fixes are unavailable. This is an open finding inventory, not a clean
 scan or a general security certification.
 
 `pip-audit` reports no known vulnerabilities in the locked application Python
 environment. Trivy scans package metadata; it does not establish that every bundled
-Chromium component is safe. The exact final image digest and repeat scan belong in
+Chromium component is safe. Published manifest identities and per-platform scan
+results are recorded below; operational checks remain in
 [release verification](release-verification.md).
 
 ## Disposition for private prerelease testing
@@ -54,7 +56,8 @@ expose its Amazon profile and shared application data despite the container cont
   is not a claim that the underlying libraries are patched.
 - util-linux, ACL and systemd findings concern local privileged operations.
   Both application roles run as UID 1000 with all capabilities dropped,
-  `no-new-privileges`, a read-only image and no host filesystem/docker-socket mount.
+  `no-new-privileges`, a read-only image and no host-root or Docker-socket mount.
+  Only the declared application-data and collector-session storage is mounted.
   No systemd-homed service or privileged mount helper is part of the application.
 - CUPS server processing and the `tiffcrop` command are not application flows.
   There is no print daemon. TIFF findings also include a decoder denial of service,
@@ -160,9 +163,55 @@ and their binary-package sets match that capture without omissions. Raw scan and
 linkage records remain in ignored `data/`; this report records the relevant
 nonprivate evidence.
 
-This image ID is not evidence for the final published image or an `amd64` build.
-Record the final digest and repeat audit for each distributed architecture in
-[release verification](release-verification.md), and verify the actual private
-access boundary before using a real account. Those delivery checks and the
-separate Amazon authentication/collection gate remain open; accepting this
-package disposition does not complete them.
+The published-platform checks below supersede the intermediate image as package
+inventory evidence. They retain the same open findings and bounded disposition.
+Actual private access enforcement and Amazon authentication/collection have their
+own acceptance evidence; this package review does not establish them.
+
+## Published artifacts — 2026-10-20
+
+The published `0.1.0` index is
+`sha256:b06a0197838e672ffdfc7671a2d1ea94f4d761c7478f7bb2b9e976c28057c6e0`.
+Both images identify source revision
+`89dff199286117957cb91a5ac59930ca0b7b41c9`; their immutable platform manifests were
+resolved from that index and inspected locally after pull. Trivy 0.76.0 scanned
+each selected platform with the vulnerability scanner and `HIGH,CRITICAL` severity
+filter. Both scans used the database updated at `2026-10-20T13:14:22Z`.
+
+| Platform | Immutable manifest | Scan completed (UTC) | High / critical occurrences | Unique CVEs |
+| --- | --- | --- | --- | --- |
+| `linux/amd64` | `sha256:a3413bda1eedcb0a3eedc6e9634b87e24f4ffc87497d54a0ba2601c72d6979fa` | `2026-10-20T18:35:46Z` | 94 / 1 | 37 |
+| `linux/arm64` | `sha256:5ff34f34152f8d5dad0efc78e2699c6e11a26c303dae51853e3bf83918f8e765` | `2026-10-20T18:34:52Z` | 94 / 1 | 37 |
+
+The CVE, binary-package, installed-version, severity and fixed-version tuples are
+identical between platforms and the reviewed final local image. Neither published
+scan contains a populated `FixedVersion`, and the 37 open-finding rows above match
+both scans. No new package finding changes the operator-only private-prerelease
+disposition. Raw reports remain in ignored `data/image-audit-published-amd64.json`
+and `data/image-audit-published-arm64.json`.
+
+Exact source inventories were exported from disposable containers with networking
+disabled and no application-data or session mounts. The ARM64 image's 204 Debian
+source/version pairs all match the existing source bundle, whose SHA-256 is
+`95c561b98f257320b9fabeea3aab46c7317ac0d361b4dd49859256d97055710b`.
+AMD64 has 205 pairs and adds `libpciaccess=0.17-3`. Its exact source was downloaded
+through signed Debian indexes, and all three files listed by its `.dsc` descriptor
+match the recorded sizes and SHA-256 checksums.
+
+The additional source and AMD64 inventories/notices are packaged in
+[`vine-search-0.1.0-third-party-sources-amd64-supplement.tar.gz`](https://github.com/sageframe-no-kaji/vine-search/releases/download/v0.1.0/vine-search-0.1.0-third-party-sources-amd64-supplement.tar.gz), SHA-256
+`bfaac22a109b09d0c97c21242f62144a04164ddab85ed52113ff69a4524b1c6e`.
+Together with the [original ARM64 source bundle](https://github.com/sageframe-no-kaji/vine-search/releases/download/v0.1.0/vine-search-0.1.0-third-party-sources-arm64.tar.gz),
+it covers all Debian source pairs for both platforms; the supplement is not a
+standalone source bundle. Both assets and their checksum files are published with
+`v0.1.0`. An anonymous supplement download at `2026-10-20T18:38:12Z` matched the
+2,079,573-byte archive and its SHA-256, completing the additional AMD64 source
+delivery check. [Container package sources](debian-packages.md) explains the
+two-archive relationship.
+
+Both platforms match the source bundle's Python package names/versions, Playwright
+browser metadata, adapted noVNC source and transformation script. FFmpeg version
+output agrees; its build-configuration differences are confined to ARM64 target,
+cross-compiler and documentation flags. Full architecture-specific inventories,
+notices and build flags remain available in the source exports, with the comparison
+record in ignored `data/published-source-comparison.json`.
