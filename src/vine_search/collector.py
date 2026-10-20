@@ -26,6 +26,7 @@ from vine_search.amazon import (
     Scan,
     collect,
     load_page,
+    lookup_details,
     signed_in_vine,
 )
 from vine_search.login import BrowserOwner, LoginController, utc_now
@@ -154,14 +155,18 @@ class Collector:
                     return Scan("cancelled")
                 async with self.owner.browser() as browser:
                     page = browser.pages[0] if browser.pages else await browser.new_page()
-                    scan = await collect(
-                        page,
-                        job["kind"],
-                        job.get("query", ""),
-                        page_budget=page_budget,
-                        runtime_budget=runtime,
-                        progress=progress,
-                    )
+                    if job["kind"] == "details":
+                        scan = await lookup_details(page, payload, progress=progress)
+                    else:
+                        scan = await collect(
+                            page,
+                            job["kind"],
+                            job.get("query", ""),
+                            page_budget=page_budget,
+                            runtime_budget=runtime,
+                            exhaustive=job["kind"] == "search",
+                            progress=progress,
+                        )
         except asyncio.CancelledError:
             # No false completion: the lease survives and restart recovery retries it.
             raise
@@ -171,31 +176,72 @@ class Collector:
             heart.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heart
-        if self.store.get_job(job["id"])["status"] == "cancelled":
+
+        def mark_cancelled() -> None:
             scan.status = "cancelled"
             scan.error = "Cancelled by the operator; captured pages retained."
-        if job["kind"] == "reviews":
-            self.store.record_review_scan(
-                job["id"], scan.reviews, status=scan.status, pages=scan.pages, source="amazon"
-            )
-            if scan.error:
-                self.store.update_job(job["id"], error=scan.error)
-        else:
-            self.store.record_scan(
-                job["id"],
-                scan.products,
-                status=scan.status,
-                pages=scan.pages,
-                advertised_count=scan.advertised_count,
-                error=scan.error,
-            )
+            scan.stop_reason = None
+
+        def save_capture() -> None:
+            if job["kind"] == "details":
+                self.store.update_job(
+                    job["id"],
+                    status=scan.status,
+                    result=scan.details,
+                    error=scan.error,
+                )
+            elif job["kind"] == "reviews":
+                self.store.record_review_scan(
+                    job["id"],
+                    scan.reviews,
+                    status=scan.status,
+                    pages=scan.pages,
+                    source="amazon",
+                    error=scan.error,
+                )
+            else:
+                self.store.record_scan(
+                    job["id"],
+                    scan.products,
+                    status=scan.status,
+                    pages=scan.pages,
+                    advertised_count=scan.advertised_count,
+                    error=scan.error,
+                )
+
+        if self.store.get_job(job["id"])["status"] == "cancelled":
+            mark_cancelled()
+        try:
+            save_capture()
+        except ValueError:
+            # The web process can cancel after our status check but before the
+            # transaction commits. Retain the captured result without reviving it.
+            if scan.status == "cancelled" or self.store.get_job(job["id"])["status"] != "cancelled":
+                raise
+            mark_cancelled()
+            save_capture()
+        saved_progress = self.store.get_job(job["id"])["progress"]
+        self.store.update_job(
+            job["id"],
+            progress={
+                **saved_progress,
+                "stop_reason": scan.stop_reason,
+                "section_pages": scan.section_pages,
+                "elapsed_seconds": scan.elapsed_seconds,
+                "exhaustive": scan.exhaustive,
+            },
+        )
         deliberately_disconnected = (self.owner.session_dir / "disconnected").exists()
         if scan.status == "needs_login" and not deliberately_disconnected:
             self.store.set_connection(
                 "challenge" if scan.error and scan.error.startswith("challenge") else "needs_login",
                 message="Amazon needs your attention. Open the login browser to continue.",
             )
-        elif scan.status in {"complete", "truncated"} and not deliberately_disconnected:
+        elif (
+            scan.status in {"complete", "truncated"}
+            and scan.pages
+            and not deliberately_disconnected
+        ):
             self.store.set_connection(
                 "connected", message="Amazon Vine access verified.", last_success=utc_now()
             )

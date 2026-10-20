@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .matching import normalized, rank_all, rank_product
 from .models import (
@@ -21,6 +22,7 @@ from .models import (
     TERMINAL_STATUSES,
     Json,
     clean_product,
+    clean_product_details,
     integer,
     parse_time,
     safe_amazon_url,
@@ -29,9 +31,15 @@ from .models import (
     utcnow,
     validate_settings,
     validate_tracker,
+    validate_visibility,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+REVIEW_SELECT = (
+    "SELECT reviews.*,COALESCE(NULLIF(reviews.image_url,''),"
+    "(SELECT image_url FROM products WHERE products.marketplace=reviews.marketplace "
+    "AND products.asin=reviews.asin),'') AS thumbnail_url FROM reviews"
+)
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL,
 updated_at TEXT NOT NULL);
@@ -40,7 +48,8 @@ CREATE TABLE IF NOT EXISTS products (
  category TEXT NOT NULL DEFAULT '', variant TEXT NOT NULL DEFAULT '', image_url TEXT NOT NULL
 DEFAULT '',
  product_url TEXT NOT NULL, vine_url TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL,
-last_seen TEXT NOT NULL,
+last_seen TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0,1)),
+hidden_at TEXT,
  UNIQUE(marketplace,asin));
 CREATE VIRTUAL TABLE IF NOT EXISTS product_fts USING
 fts5(title,category,asin,content='products',content_rowid='id');
@@ -109,7 +118,9 @@ DEFAULT 'amazon.com',
  observed_status TEXT NOT NULL DEFAULT 'unknown', observed_deadline TEXT NOT NULL DEFAULT '',
  product_url TEXT NOT NULL DEFAULT '', review_url TEXT NOT NULL DEFAULT '', rating INTEGER,
  source TEXT NOT NULL DEFAULT 'amazon', local_progress TEXT NOT NULL DEFAULT 'not_started',
- first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);
+ first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+ image_url TEXT NOT NULL DEFAULT '',
+ hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0,1)), hidden_at TEXT);
 CREATE INDEX IF NOT EXISTS reviews_order ON reviews(order_date,id);
 CREATE TABLE IF NOT EXISTS review_observations (
  id INTEGER PRIMARY KEY, review_id INTEGER NOT NULL REFERENCES reviews(id) ON DELETE CASCADE,
@@ -184,18 +195,27 @@ class Store:
                 db.execute("PRAGMA journal_mode=WAL")
                 db.executescript(SCHEMA)
                 db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            elif version == 1:
-                db.execute(
-                    "CREATE TABLE IF NOT EXISTS alert_history (marketplace TEXT NOT NULL, "
-                    "asin TEXT NOT NULL, tracker_id INTEGER NOT NULL REFERENCES trackers(id) "
-                    "ON DELETE CASCADE, seen_at TEXT NOT NULL, "
-                    "PRIMARY KEY(marketplace,asin,tracker_id))"
-                )
-                db.execute(
-                    "INSERT OR IGNORE INTO alert_history SELECT p.marketplace,p.asin,"
-                    "a.tracker_id,a.seen_at FROM alert_seen a JOIN products p ON p.id=a.product_id"
-                )
-                db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            elif version in {1, 2}:
+                # Serialize migrations across web/collector startup and recheck after locking.
+                db.execute("BEGIN IMMEDIATE")
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                if version == 1:
+                    self._migrate_alert_history(db)
+                if version in {1, 2}:
+                    for table in ("products", "reviews"):
+                        columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                        if "hidden" not in columns:
+                            db.execute(
+                                f"ALTER TABLE {table} ADD COLUMN hidden INTEGER NOT NULL "
+                                "DEFAULT 0 CHECK(hidden IN (0,1))"
+                            )
+                        if "hidden_at" not in columns:
+                            db.execute(f"ALTER TABLE {table} ADD COLUMN hidden_at TEXT")
+                        if table == "reviews" and "image_url" not in columns:
+                            db.execute(
+                                "ALTER TABLE reviews ADD COLUMN image_url TEXT NOT NULL DEFAULT ''"
+                            )
+                    db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             now = parse_time().isoformat()
             is_new = db.execute("SELECT 1 FROM settings").fetchone() is None
             db.execute(
@@ -245,6 +265,18 @@ class Store:
                         "INSERT INTO trackers(data,created_at,updated_at) VALUES(?,?,?)",
                         (_dump(tracker), now, now),
                     )
+
+    def _migrate_alert_history(self, db: sqlite3.Connection) -> None:
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS alert_history (marketplace TEXT NOT NULL, "
+            "asin TEXT NOT NULL, tracker_id INTEGER NOT NULL REFERENCES trackers(id) "
+            "ON DELETE CASCADE, seen_at TEXT NOT NULL, "
+            "PRIMARY KEY(marketplace,asin,tracker_id))"
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO alert_history SELECT p.marketplace,p.asin,"
+            "a.tracker_id,a.seen_at FROM alert_seen a JOIN products p ON p.id=a.product_id"
+        )
 
     def _settings(self, db: sqlite3.Connection) -> Json:
         return {
@@ -359,6 +391,9 @@ class Store:
                 db, kind, query=query, tracker_id=tracker_id, source=source, payload=payload
             )
 
+    def enqueue_product_details(self, product_id: int) -> Json:
+        return self.enqueue_job("details", payload={"product_id": product_id})
+
     def _enqueue(
         self,
         db: sqlite3.Connection,
@@ -383,12 +418,32 @@ class Store:
         ):
             raise KeyError("Tracker not found")
         source = text_value(source, "source", 50)
+        detail_product: Json | None = None
+        if kind == "details":
+            if source != "manual" or tracker_id is not None:
+                raise ValueError("Product details are requested individually")
+            if not isinstance(payload, dict):
+                raise ValueError("Product details require a product ID")
+            product_id = integer(payload.get("product_id"), "product_id", 1, 9223372036854775807)
+            detail_product = _row(
+                db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
+            )
+            observed_url = safe_amazon_url(detail_product["vine_url"])
+            if not observed_url or urlparse(observed_url).path.rstrip("/") != "/vine/vine-items":
+                raise ValueError("Refresh this item in Discover before requesting Vine details")
         existing = db.execute(
             (
                 "SELECT * FROM jobs WHERE kind=? AND lower(query)=lower(?) AND status "
-                "IN ('queued','running') ORDER BY id LIMIT 1"
+                "IN ('queued','running') AND (kind!='search' OR "
+                "(source='manual')=?) AND (kind!='details' OR "
+                "json_extract(payload,'$.product_id')=?) ORDER BY id LIMIT 1"
             ),
-            (kind, query),
+            (
+                kind,
+                query,
+                int(source == "manual"),
+                detail_product["id"] if detail_product is not None else None,
+            ),
         ).fetchone()
         if existing:
             return _job(existing)
@@ -406,6 +461,13 @@ class Store:
         integer(snapshot["page_budget"], "page_budget", 1, 100)
         integer(snapshot["review_page_budget"], "review_page_budget", 1, 100)
         integer(snapshot["runtime_budget_seconds"], "runtime_budget_seconds", 15, 1800)
+        # Search coverage is a job-kind policy, never a caller-selected budget.
+        snapshot["exhaustive"] = kind == "search"
+        if detail_product is not None:
+            # Callers cannot replace the observed browser locator or product identity.
+            for key in ("asin", "vine_url"):
+                snapshot[key] = detail_product[key]
+            snapshot["product_id"] = detail_product["id"]
         now = now or utcnow()
         cursor = db.execute(
             (
@@ -529,6 +591,14 @@ class Store:
             raise ValueError("Invalid job status")
         with self.connect(write=True) as db:
             existing = _job(db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+            if existing["kind"] == "details" and result:
+                result = clean_product_details(
+                    result,
+                    product_id=existing["payload"]["product_id"],
+                    asin=existing["payload"]["asin"],
+                )
+            if existing["kind"] == "details" and status == "complete" and not result:
+                raise ValueError("Completed details jobs require an observed or unavailable result")
             if existing["status"] in TERMINAL_STATUSES and status and status != existing["status"]:
                 raise ValueError("A completed job cannot change status")
             db.execute(
@@ -611,7 +681,7 @@ class Store:
                             tracker["query"],
                             tracker["id"],
                             tracker["interval_minutes"],
-                            {"page_budget": tracker["page_budget"]},
+                            {},
                         )
                     )
             for scope, kind, query, tracker_id, minutes, payload in plans:
@@ -650,7 +720,7 @@ class Store:
     ) -> Json:
         if status not in TERMINAL_STATUSES:
             raise ValueError("Scan must have a terminal status")
-        integer(pages, "pages", 0, 10000)
+        integer(pages, "pages", 0, 1000000)
         if advertised is not None:
             integer(advertised, "advertised_count", 0, 10000000)
         cancelled_capture = (
@@ -847,6 +917,7 @@ class Store:
 
     def _product(self, db: sqlite3.Connection, row: sqlite3.Row) -> Json:
         product = dict(row)
+        product["hidden"] = bool(product["hidden"])
         product["sources"] = [
             dict(r)
             for r in db.execute(
@@ -872,14 +943,19 @@ class Store:
         min_score: float | None = None,
         freshness_hours: int | None = None,
         job_id: int | None = None,
+        visibility: str = "visible",
     ) -> Json:
         integer(limit, "limit", 1, 200)
         integer(offset, "offset", 0, 1000000)
         if sort not in {"rank", "newest", "recent", "title"}:
             raise ValueError("Unknown product sort")
         query = text_value(query, "query", 200)
+        validate_visibility(visibility)
         filters: list[str] = []
         args: list[Any] = []
+        if visibility != "all":
+            filters.append("p.hidden=?")
+            args.append(int(visibility == "hidden"))
         if job_id is not None:
             self.get_job(job_id)
             filters.append(
@@ -952,6 +1028,7 @@ class Store:
                 products.sort(key=lambda p: (p["title"].casefold(), p["id"]))
             items = products[offset : offset + limit]
             for item in items:
+                item["hidden"] = bool(item["hidden"])
                 item["sources"] = [
                     dict(r)
                     for r in db.execute(
@@ -982,6 +1059,31 @@ class Store:
             return rank_all(
                 self._product(db, row), [_tracker(r) for r in db.execute("SELECT * FROM trackers")]
             )
+
+    def set_visibility(self, resource: str, ids: list[int], hidden: bool) -> Json:
+        if resource not in {"products", "reviews"}:
+            raise ValueError("Visibility resource must be products or reviews")
+        if not isinstance(hidden, bool):
+            raise ValueError("hidden must be a boolean")
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 200:
+            raise ValueError("Provide between 1 and 200 IDs")
+        for identity in ids:
+            integer(identity, "id", 1, 9223372036854775807)
+        if len(set(ids)) != len(ids):
+            raise ValueError("IDs must be distinct")
+        placeholders = ",".join("?" for _ in ids)
+        with self.connect(write=True) as db:
+            found = db.execute(
+                f"SELECT count(*) FROM {resource} WHERE id IN ({placeholders})", ids
+            ).fetchone()[0]
+            if found != len(ids):
+                raise KeyError("One or more selected records were not found")
+            changed = db.execute(
+                f"UPDATE {resource} SET hidden=?,hidden_at=? "
+                f"WHERE id IN ({placeholders}) AND hidden!=?",
+                [int(hidden), utcnow() if hidden else None, *ids, int(hidden)],
+            ).rowcount
+        return {"ids": list(ids), "hidden": hidden, "updated": changed}
 
     def _clean_review(self, item: Json, *, imported: bool = False) -> Json:
         if not isinstance(item, dict):
@@ -1018,6 +1120,10 @@ class Store:
             clean.get("product_url") or (f"https://www.amazon.com/dp/{asin}" if asin else "")
         )
         clean["review_url"] = safe_amazon_url(clean.get("review_url", ""))
+        # Only observed listing thumbnails are accepted, never imported media.
+        clean["image_url"] = safe_amazon_url(
+            "" if imported else item.get("image_url", ""), image=True
+        )
         rating = clean.get("rating")
         clean["rating"] = integer(rating, "rating", 1, 5) if rating is not None else None
         progress = clean.get("local_progress", "not_started")
@@ -1082,6 +1188,7 @@ class Store:
                 "observed_deadline",
                 "product_url",
                 "review_url",
+                "image_url",
                 "rating",
                 "source",
             ]
@@ -1109,6 +1216,7 @@ class Store:
                 "observed_deadline",
                 "product_url",
                 "review_url",
+                "image_url",
                 "rating",
                 "source",
                 "local_progress",
@@ -1144,7 +1252,7 @@ class Store:
     ) -> Json:
         when = stamp(now)
         source = text_value(source, "source", 100)
-        cleaned = [self._clean_review({**item, "source": source}) for item in records]
+        cleaned = [self._clean_review({"source": source, **item}) for item in records]
         with self.connect(write=True) as db:
             job = _job(db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
             if job["kind"] != "reviews":
@@ -1159,6 +1267,8 @@ class Store:
         self, row: sqlite3.Row, settings: Json, *, now: str | datetime | None = None
     ) -> Json:
         record = dict(row)
+        record["hidden"] = bool(record["hidden"])
+        record["image_url"] = record.pop("thumbnail_url", record["image_url"])
         today = parse_time(now).date()
         order = date.fromisoformat(record["order_date"]) if record["order_date"] else None
         record["age_days"] = max(0, (today - order).days) if order else None
@@ -1182,6 +1292,7 @@ class Store:
         sort: str = "oldest",
         limit: int = 100,
         offset: int = 0,
+        visibility: str = "visible",
     ) -> Json:
         integer(limit, "limit", 1, 500)
         integer(offset, "offset", 0, 1000000)
@@ -1190,26 +1301,30 @@ class Store:
         if local_progress and local_progress not in LOCAL_PROGRESS:
             raise ValueError("Invalid local progress")
         query = text_value(query, "query", 200)
+        validate_visibility(visibility)
         filters: list[str] = []
         args: list[Any] = []
+        if visibility != "all":
+            filters.append("hidden=?")
+            args.append(int(visibility == "hidden"))
         for key, value in (
             ("observed_status", status),
             ("local_progress", local_progress),
             ("source", source),
         ):
             if value:
-                filters.append(f"lower({key})=lower(?)")
-                args.append(value)
+                if key == "source" and value.casefold() == "amazon":
+                    filters.append("(lower(source)='amazon' OR lower(source) LIKE 'amazon:%')")
+                else:
+                    filters.append(f"lower({key})=lower(?)")
+                    args.append(value)
         if query:
             filters.append("instr(lower(title || ' ' || asin || ' ' || variant),lower(?))>0")
             args.append(query)
         where = " WHERE " + " AND ".join(filters) if filters else ""
         with self.connect() as db:
             settings = self._settings(db)
-            rows = [
-                self._review(row, settings)
-                for row in db.execute("SELECT * FROM reviews" + where, args)
-            ]
+            rows = [self._review(row, settings) for row in db.execute(REVIEW_SELECT + where, args)]
             if sort == "oldest":
                 rows.sort(key=lambda r: (r["order_date"] or "9999", r["id"]))
             elif sort in {"newest", "recent"}:
@@ -1227,7 +1342,10 @@ class Store:
             counts = {
                 row["observed_status"]: row["n"]
                 for row in db.execute(
-                    "SELECT observed_status,count(*) n FROM reviews GROUP BY observed_status"
+                    "SELECT observed_status,count(*) n FROM reviews"
+                    + (" WHERE hidden=?" if visibility != "all" else "")
+                    + " GROUP BY observed_status",
+                    (int(visibility == "hidden"),) if visibility != "all" else (),
                 )
             }
             return {
@@ -1239,6 +1357,13 @@ class Store:
                 "offset": offset,
             }
 
+    def get_review(self, review_id: int) -> Json:
+        with self.connect() as db:
+            row = db.execute(REVIEW_SELECT + " WHERE reviews.id=?", (review_id,)).fetchone()
+            if row is None:
+                raise KeyError("Review record not found")
+            return self._review(row, self._settings(db))
+
     def set_review_progress(self, review_id: int, progress: str) -> Json:
         if progress not in LOCAL_PROGRESS:
             raise ValueError("Invalid local progress")
@@ -1247,7 +1372,7 @@ class Store:
                 "UPDATE reviews SET local_progress=? WHERE id=?", (progress, review_id)
             ).rowcount:
                 raise KeyError("Review record not found")
-            row = db.execute("SELECT * FROM reviews WHERE id=?", (review_id,)).fetchone()
+            row = db.execute(REVIEW_SELECT + " WHERE reviews.id=?", (review_id,)).fetchone()
             assert row is not None
             return self._review(row, self._settings(db))
 
@@ -1434,8 +1559,16 @@ class Store:
     def dashboard(self) -> Json:
         with self.connect() as db:
             return {
-                "products": db.execute("SELECT count(*) FROM products").fetchone()[0],
-                "reviews": db.execute("SELECT count(*) FROM reviews").fetchone()[0],
+                "products": db.execute("SELECT count(*) FROM products WHERE hidden=0").fetchone()[
+                    0
+                ],
+                "reviews": db.execute("SELECT count(*) FROM reviews WHERE hidden=0").fetchone()[0],
+                "products_hidden": db.execute(
+                    "SELECT count(*) FROM products WHERE hidden=1"
+                ).fetchone()[0],
+                "reviews_hidden": db.execute(
+                    "SELECT count(*) FROM reviews WHERE hidden=1"
+                ).fetchone()[0],
                 "jobs": {
                     row["status"]: row["n"]
                     for row in db.execute("SELECT status,count(*) n FROM jobs GROUP BY status")

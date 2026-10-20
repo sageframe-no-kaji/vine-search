@@ -319,3 +319,240 @@ def test_image_proxy_caches_and_rejects_markup(
 def test_config_requires_explicit_secret(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="setup"):
         Config(data_dir=tmp_path, collector_secret="").prepare()
+
+
+@pytest.mark.parametrize("resource", ["products", "reviews"])
+def test_visibility_api_is_protected_validated_and_atomic(
+    client: TestClient, resource: str
+) -> None:
+    item = product(client)
+    store = client.app.state.store  # type: ignore[union-attr]
+    if resource == "reviews":
+        job = store.enqueue_job("reviews")
+        store.record_review_scan(
+            job["id"],
+            [{"title": "Synthetic obligation", "asin": item["asin"], "external_id": "order-1"}],
+        )
+        item = store.list_reviews()["items"][0]
+    record_id = item["id"]
+    single = f"/api/{resource}/{record_id}/visibility"
+    bulk = f"/api/{resource}/visibility"
+    for path, method, body in (
+        (single, "PATCH", {"hidden": True}),
+        (bulk, "POST", {"ids": [record_id], "hidden": True}),
+    ):
+        assert (
+            client.request(method, path, json=body, headers={"X-CSRF-Token": ""}).status_code == 403
+        )
+        assert (
+            client.request(
+                method, path, json=body, headers={"Origin": "https://attacker.example"}
+            ).status_code
+            == 403
+        )
+    for body in (
+        {"hidden": "true"},
+        {"hidden": True, "unexpected": "ignored"},
+        {},
+    ):
+        assert client.patch(single, json=body).status_code == 422
+    for body in (
+        {"ids": [], "hidden": True},
+        {"ids": [record_id] * 201, "hidden": True},
+        {"ids": [record_id, record_id], "hidden": True},
+        {"ids": [True], "hidden": True},
+        {"ids": [str(record_id)], "hidden": True},
+        {"ids": [record_id]},
+    ):
+        assert client.post(bulk, json=body).status_code == 422
+    assert client.post(bulk, json={"ids": [record_id, 99999], "hidden": True}).status_code == 404
+    assert client.get(f"/api/{resource}").json()["total"] == 1
+    changed = client.patch(single, json={"hidden": True})
+    assert changed.status_code == 200
+    assert changed.json() == {"ids": [record_id], "hidden": True, "updated": 1}
+    assert client.get(f"/api/{resource}").json()["total"] == 0
+    hidden = client.get(f"/api/{resource}?visibility=hidden").json()["items"][0]
+    assert hidden["id"] == record_id and hidden["hidden"] is True and hidden["hidden_at"]
+    assert client.get(f"/api/{resource}?visibility=all").json()["total"] == 1
+    assert client.get(f"/api/{resource}?visibility=deleted").status_code == 422
+    assert client.post(bulk, json={"ids": [record_id], "hidden": False}).status_code == 200
+    restored = client.get(f"/api/{resource}").json()["items"][0]
+    assert restored["hidden"] is False and restored["hidden_at"] is None
+
+
+def test_review_image_proxy_uses_fallback_cache_and_image_privacy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    item = product(client)
+    store = client.app.state.store  # type: ignore[union-attr]
+    job = store.enqueue_job("reviews")
+    store.record_review_scan(
+        job["id"],
+        [{"title": "Synthetic review image", "asin": item["asin"], "external_id": "order"}],
+    )
+    review = client.get("/api/reviews").json()["items"][0]
+    assert review["image_url"] == item["image_url"]
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, content=b"PNG", headers={"content-type": "image/png"})
+
+    mock_transport(monkeypatch, handler)
+    path = f"/api/reviews/{review['id']}/image"
+    assert client.get(path).content == b"PNG"
+    assert client.get(path).content == b"PNG"
+    assert client.get(f"/api/products/{item['id']}/image").content == b"PNG"
+    assert requests == [item["image_url"]]
+    client.patch("/api/settings", json={"image_mode": "hidden"})
+    assert client.get(path).status_code == 404
+    assert len(requests) == 1
+    client.patch("/api/settings", json={"image_mode": "proxy"})
+    with store.connect(write=True) as connection:
+        connection.execute(
+            "UPDATE reviews SET image_url='http://127.0.0.1/private' WHERE id=?", (review["id"],)
+        )
+    assert client.get(path).status_code == 404
+    assert client.get("/api/reviews/99999/image").status_code == 404
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "mime", "content"),
+    [
+        (302, "image/png", b"redirect"),
+        (200, "text/html", b"<script>unsafe</script>"),
+        (200, "image/jpeg", b"x" * 5_000_001),
+    ],
+)
+def test_review_image_proxy_rejects_redirect_markup_and_oversize(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    mime: str,
+    content: bytes,
+) -> None:
+    store = client.app.state.store  # type: ignore[union-attr]
+    job = store.enqueue_job("reviews")
+    store.record_review_scan(
+        job["id"],
+        [
+            {
+                "title": "Synthetic thumbnail",
+                "external_id": "order",
+                "image_url": "https://m.media-amazon.com/thumbnail.jpg",
+            }
+        ],
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status,
+            content=content,
+            headers={"content-type": mime, "location": "http://127.0.0.1/private"},
+        )
+
+    mock_transport(monkeypatch, handler)
+    assert client.get("/api/reviews/1/image").status_code == 502
+
+
+def test_review_pagination_is_applied_after_visibility_filter(client: TestClient) -> None:
+    store = client.app.state.store  # type: ignore[union-attr]
+    job = store.enqueue_job("reviews")
+    store.record_review_scan(
+        job["id"],
+        [{"external_id": f"order-{number}", "title": f"Review {number}"} for number in range(4)],
+    )
+    store.set_visibility("reviews", [1], True)
+    response = client.get("/api/reviews?limit=1&offset=1").json()
+    assert response["total"] == 3 and response["items"][0]["id"] == 3
+    assert response["limit"] == response["offset"] == 1
+    assert client.get("/api/reviews?limit=1&page=2").json()["items"][0]["id"] == 3
+    assert client.get("/api/reviews?visibility=all&limit=1&offset=1").json()["items"][0]["id"] == 2
+    assert client.get("/api/reviews?limit=501").status_code == 422
+
+
+def test_product_details_api_uses_only_observed_locator_and_existing_job_polling(
+    client: TestClient,
+) -> None:
+    item = product(client)
+    store = client.app.state.store  # type: ignore[union-attr]
+    path = f"/api/products/{item['id']}/details"
+    assert client.post(path).status_code == 422  # No observed Vine page in this fixture yet.
+    with store.connect(write=True) as connection:
+        connection.execute(
+            "UPDATE products SET vine_url=? WHERE id=?",
+            ("https://www.amazon.com/vine/vine-items?queue=potluck", item["id"]),
+        )
+    assert client.post(path, headers={"X-CSRF-Token": ""}).status_code == 403
+    assert client.post(path, headers={"Origin": "https://attacker.example"}).status_code == 403
+    assert client.post(path, json={"vine_url": "https://evil.example"}).status_code == 422
+    assert client.post("/api/products/99999/details").status_code == 404
+    response = client.post(path)
+    assert response.status_code == 202
+    job = response.json()
+    assert job["kind"] == "details" and job["payload"]["product_id"] == item["id"]
+    assert client.post(path, json={}).json()["id"] == job["id"]
+    assert client.get(f"/api/jobs/{job['id']}").json()["status"] == "queued"
+    assert client.post(f"/api/jobs/{job['id']}/cancel").json()["status"] == "cancelled"
+    assert client.post("/api/jobs", json={"kind": "details", "url": "arbitrary"}).status_code == 422
+
+
+def test_full_tracker_editor_payload_saves_updates_and_failed_saves_preserve_state(
+    client: TestClient,
+) -> None:
+    """Exercise the browser editor's entire serialized shape, not a partial API example."""
+    payload = {
+        "name": "Synthetic network rack",
+        "query": "network rack",
+        "phrases": ["network rack", "server rack"],
+        "phrase_mode": "any",
+        "exclusions": ["wine rack", "shoe rack"],
+        "categories": [],
+        "enabled": True,
+        "schedule_enabled": True,
+        "notify": True,
+        "phrase_weight": 30,
+        "category_weight": 20,
+        "freshness_weight": 10,
+        "min_score": 1,
+        "freshness_hours": 168,
+        "interval_minutes": 15,
+        "page_budget": 5,
+    }
+    # Saving tracker alert preferences is allowed before a destination is configured.
+    assert client.get("/api/settings").json()["notifications_enabled"] is False
+    response = client.post("/api/trackers", json=payload)
+    assert response.status_code == 201
+    saved = response.json()
+    assert {key: saved[key] for key in payload} == payload
+    route = f"/api/trackers/{saved['id']}"
+    changed = {
+        **payload,
+        "name": "Updated synthetic rack",
+        "phrase_weight": 40,
+        "schedule_enabled": False,
+        "page_budget": 100,
+    }
+    response = client.patch(route, json=changed)
+    assert response.status_code == 200
+    persisted = next(
+        item for item in client.get("/api/trackers").json() if item["id"] == saved["id"]
+    )
+    assert {key: persisted[key] for key in changed} == changed
+    cases = [
+        ({"schedule_enabled": True, "query": ""}, "live query"),
+        ({"page_budget": 101}, "page_budget"),
+        ({"freshness_hours": 0}, "freshness_hours"),
+    ]
+    for patch, error in cases:
+        rejected = client.patch(route, json=patch)
+        assert rejected.status_code == 422
+        assert error in rejected.json()["detail"]
+    rejected = client.patch(route, json={"name": "Must not save"}, headers={"X-CSRF-Token": ""})
+    assert rejected.status_code == 403
+    assert "Reload the page" in rejected.json()["detail"]
+    assert (
+        next(item for item in client.get("/api/trackers").json() if item["id"] == saved["id"])
+        == persisted
+    )

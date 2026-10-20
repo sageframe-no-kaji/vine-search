@@ -71,9 +71,10 @@ TRACKER_DEFAULTS: Json = {
     "interval_minutes": 15,
     "page_budget": 5,
 }
-JOB_KINDS = {"rfy", "afa", "search", "reviews", "login", "disconnect"}
+JOB_KINDS = {"rfy", "afa", "search", "reviews", "details", "login", "disconnect"}
 TERMINAL_STATUSES = {"complete", "partial", "truncated", "failed", "needs_login", "cancelled"}
 LOCAL_PROGRESS = {"not_started", "in_progress", "submitted"}
+VISIBILITY = {"visible", "hidden", "all"}
 REVIEW_FIELDS = {
     "external_id",
     "asin",
@@ -124,6 +125,12 @@ def text_value(value: Any, name: str, maximum: int = 1000, *, empty: bool = True
 def integer(value: Any, name: str, low: int, high: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise ValueError(f"{name} must be an integer between {low} and {high}")
+    return value
+
+
+def validate_visibility(value: str) -> str:
+    if not isinstance(value, str) or value not in VISIBILITY:
+        raise ValueError("visibility must be visible, hidden or all")
     return value
 
 
@@ -253,3 +260,50 @@ def clean_product(data: Json) -> Json:
         ),
         "vine_url": safe_amazon_url(data.get("vine_url", "")),
     }
+
+
+def clean_product_details(data: Json, *, product_id: int, asin: str) -> Json:
+    """Keep only read-only product detail fields observed by the browser owner."""
+    if (
+        not isinstance(data, dict)
+        or not isinstance(data.get("state"), str)
+        or data["state"] not in {"observed", "unavailable"}
+    ):
+        raise ValueError("Invalid product details outcome")
+    if (
+        integer(data.get("product_id"), "product_id", 1, 9223372036854775807) != product_id
+        or data.get("asin") != asin
+    ):
+        raise ValueError("Product details must match the requested product")
+    variants = data.get("variants", [])
+    if not isinstance(variants, list) or len(variants) > 20:
+        raise ValueError("Product details contain too many variant controls")
+    cleaned_variants: list[Json] = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            raise ValueError("Each variant must be an object")
+        options = variant.get("options", [])
+        if not isinstance(options, list) or len(options) > 100:
+            raise ValueError("Product details contain too many variant options")
+        cleaned_variants.append(
+            {
+                "name": text_value(variant.get("name") or "", "variant name", 200),
+                "selected": text_value(variant.get("selected") or "", "selected variant", 500),
+                "options": [text_value(option, "variant option", 500) for option in options],
+            }
+        )
+    result: Json = {
+        "product_id": product_id,
+        "asin": asin,
+        "state": data["state"],
+        "title": text_value(data.get("title") or "", "title", 1500),
+        "image_url": safe_amazon_url(data.get("image_url") or "", image=True),
+        "description": text_value(data.get("description") or "", "description", 20000),
+        "etv_label": text_value(data.get("etv_label") or "", "ETV label", 200),
+        "variants": cleaned_variants,
+        "observed_at": stamp(data.get("observed_at")),
+    }
+    for key, maximum in (("etv", 200), ("availability", 1000), ("message", 2000)):
+        value = data.get(key)
+        result[key] = text_value(value, key, maximum) if value not in (None, "") else None
+    return result

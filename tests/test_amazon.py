@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from vine_search import amazon
 from vine_search.amazon import (
     ORIGIN,
     CollectionCancelledError,
@@ -189,6 +193,51 @@ def test_review_preserves_actual_status_order_identity_and_section_source() -> N
     }
 
 
+def test_review_prefers_full_title_decodes_entities_and_keeps_product_thumbnail() -> None:
+    title = (
+        '<span class="a-truncate"><span class="a-truncate-full">'
+        "Maker&amp;#39;s switch &amp;amp; adapter"
+        '</span><span class="a-truncate-cut" aria-hidden="true">Maker&amp;#39;s swi…</span></span>'
+    )
+    html = REVIEWS.replace("Network switch</a>", title + "</a>").replace(
+        '<td class="vvp-reviews-table--text-col">',
+        '<td><a href="/dp/B000000001">'
+        '<img src="https://m.media-amazon.com/images/I/synthetic-review.jpg">'
+        '</a></td><td class="vvp-reviews-table--text-col">',
+    )
+    record = parse_reviews(html, REVIEW_URL, "awaiting_review").reviews[0]
+    assert record["title"] == "Maker's switch & adapter"
+    assert record["image_url"] == "https://m.media-amazon.com/images/I/synthetic-review.jpg"
+    assert record["asin"] == "B000000001"
+    assert record["external_id"] == "synthetic-order"
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ('<img src="https://evil.example/tracker.jpg">', None),
+        ('<img src="data:image/png;base64,AA==">', None),
+        (
+            '<img src="data:image/png;base64,AA==" '
+            'data-src="https://m.media-amazon.com/images/I/synthetic-review.jpg">',
+            "https://m.media-amazon.com/images/I/synthetic-review.jpg",
+        ),
+        ("", None),
+    ],
+)
+def test_review_images_require_an_allowed_source(image: str, expected: str | None) -> None:
+    html = REVIEWS.replace("Network switch</a>", "Network switch</a>" + image)
+    assert parse_reviews(html, REVIEW_URL, "reviewed").reviews[0]["image_url"] == expected
+
+
+def test_catalog_decodes_encoded_title_without_duplicate_short_text() -> None:
+    html = CATALOG.replace(
+        "Small Network Switch &amp; Adapter",
+        "Maker&amp;#39;s switch &amp;amp; adapter",
+    ).replace("</span></div>", '</span><span class="a-truncate-cut">Maker…</span></div>')
+    assert parse_catalog(html, URL).products[0]["title"] == "Maker's switch & adapter"
+
+
 def test_review_unknown_and_awaiting_are_distinct() -> None:
     html = REVIEWS.replace("<th>Status</th>", "<th>Unknown</th>")
     assert parse_reviews(html, REVIEW_URL, "reviewed").reviews[0]["observed_status"] == "unknown"
@@ -244,10 +293,17 @@ async def test_paginated_run_and_configured_truncation() -> None:
     page = FakePage({URL: CATALOG + next_link(second), second: CATALOG})
     result = await collect(page, "rfy", page_budget=1)
     assert result.status == "truncated" and result.pages == 1
+    assert result.stop_reason == "page_budget"
+    assert result.error == (
+        "Page limit reached (1 page). Retained 1 item from 1 completed page; more pages remain."
+    )
+    assert result.section_pages == {"rfy": 1}
     result = await collect(page, "rfy", page_budget=2)
     assert result.status == "complete" and result.pages == 2
     assert len(result.products) == 2
     assert result.advertised_count == 1
+    assert result.stop_reason is None
+    assert result.error is None
 
 
 async def test_partial_failed_login_and_loop_detection() -> None:
@@ -256,6 +312,8 @@ async def test_partial_failed_login_and_loop_detection() -> None:
     result = await collect(page, "rfy")
     assert result.status == "partial" and result.pages == 1
     assert len(result.products) == 1
+    assert result.stop_reason is None
+    assert result.error == "Page load failed (TimeoutError); no absence inferred."
     page.documents[URL] = TimeoutError()
     assert (await collect(page, "rfy")).status == "failed"
     page.documents[URL] = "<input id='captchacharacters'>"
@@ -280,10 +338,246 @@ async def test_review_scan_traverses_both_observed_sections() -> None:
     assert {r["source"] for r in result.reviews} == {"amazon:awaiting_review", "amazon:reviewed"}
     result = await collect(page, "reviews", page_budget=1)
     assert result.status == "truncated"
+    assert result.section_pages == {"awaiting_review": 1, "reviewed": 0}
     page.documents[REVIEW_URL] = "<input id='ap_password'>"
     assert (await collect(page, "reviews")).status == "needs_login"
     page.documents[REVIEW_URL] = "<table id='vvp-reviews-table'>No reviews</table>"
     assert (await collect(page, "reviews")).status == "failed"
+
+
+async def test_review_budget_interleaves_sections_and_finishes_only_when_both_end() -> None:
+    sections = review_sections(REVIEWS, REVIEW_URL)
+    documents = {REVIEW_URL: REVIEWS}
+    expected_visits = [REVIEW_URL]
+    for index in range(1, 4):
+        for section, initial in sections.items():
+            url = initial if index == 1 else initial + f"&page={index}"
+            status = "Awaiting Review" if section == "awaiting_review" else "Published"
+            document = REVIEWS.replace("Pending approval", status)
+            document = document.replace("synthetic-order", f"synthetic-{section}-{index}")
+            documents[url] = document + (
+                next_link(initial + f"&page={index + 1}") if index < 3 else ""
+            )
+            expected_visits.append(url)
+    page = FakePage(documents)
+    result = await collect(page, "reviews", page_budget=5)
+    assert page.visited == expected_visits[:6]
+    assert result.status == "truncated" and result.stop_reason == "page_budget"
+    assert result.pages == 5 and len(result.reviews) == 5
+    assert result.section_pages == {"awaiting_review": 3, "reviewed": 2}
+    assert {r["observed_status"] for r in result.reviews} == {"Awaiting Review", "Published"}
+    complete = await collect(FakePage(documents), "reviews", page_budget=6)
+    assert complete.status == "complete" and complete.stop_reason is None
+    assert complete.section_pages == {"awaiting_review": 3, "reviewed": 3}
+    assert len(complete.reviews) == 6
+
+
+async def test_finished_review_section_releases_remaining_budget_without_inventing_status() -> None:
+    sections = review_sections(REVIEWS, REVIEW_URL)
+    awaiting, reviewed = sections["awaiting_review"], sections["reviewed"]
+    following = reviewed + "&page=2"
+    documents = {
+        REVIEW_URL: REVIEWS,
+        awaiting: '<table id="vvp-reviews-table">No reviews</table>',
+        reviewed: REVIEWS.replace("<th>Status</th>", "<th>Other</th>") + next_link(following),
+        following: REVIEWS.replace("<th>Status</th>", "<th>Other</th>"),
+    }
+    result = await collect(FakePage(documents), "reviews", page_budget=3)
+    assert result.status == "complete" and result.pages == 3
+    assert result.section_pages == {"awaiting_review": 1, "reviewed": 2}
+    assert {r["observed_status"] for r in result.reviews} == {"unknown"}
+
+
+async def test_review_failure_retains_first_section_and_does_not_claim_completeness() -> None:
+    sections = review_sections(REVIEWS, REVIEW_URL)
+    awaiting, reviewed = sections["awaiting_review"], sections["reviewed"]
+    following = awaiting + "&page=2"
+    page = FakePage(
+        {
+            REVIEW_URL: REVIEWS,
+            awaiting: REVIEWS + next_link(following),
+            reviewed: PlaywrightTimeoutError("private page details"),
+            following: REVIEWS,
+        }
+    )
+    result = await collect(page, "reviews")
+    assert result.status == "partial" and result.stop_reason is None
+    assert result.section_pages == {"awaiting_review": 1, "reviewed": 0}
+    assert page.visited == [REVIEW_URL, awaiting, reviewed]
+    assert len(result.reviews) == 1
+    assert result.error == "Page load failed (TimeoutError); no absence inferred."
+
+
+@pytest.mark.parametrize("phase", ["catalog", "next_page", "review_navigation", "review_section"])
+async def test_runtime_deadline_cancels_waiting_page_and_retains_completed_pages(
+    monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    clock_calls = 0
+
+    def monotonic() -> float:
+        nonlocal clock_calls
+        clock_calls += 1
+        # Advance only the collector's clock, leaving the event loop clock real.
+        # Its actual timeout then cancels the stalled page after 10 milliseconds.
+        return 0 if clock_calls == 1 else 9.99
+
+    monkeypatch.setattr(amazon, "time", SimpleNamespace(monotonic=monotonic))
+    sections = review_sections(REVIEWS, REVIEW_URL)
+    second = URL + "&page=2"
+    stalled = {
+        "catalog": URL,
+        "next_page": second,
+        "review_navigation": REVIEW_URL,
+        "review_section": sections["awaiting_review"],
+    }[phase]
+    cancelled = asyncio.Event()
+
+    class StalledPage(FakePage):
+        async def goto(self, url: str, **kwargs: Any) -> None:
+            if url == stalled:
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            await super().goto(url, **kwargs)
+
+    page = StalledPage(
+        {
+            URL: CATALOG + next_link(second),
+            REVIEW_URL: REVIEWS,
+            **dict.fromkeys(sections.values(), REVIEWS),
+        }
+    )
+    result = await collect(
+        page, "reviews" if phase.startswith("review") else "rfy", runtime_budget=10
+    )
+    expected_pages = 1 if phase == "next_page" else 0
+    assert cancelled.is_set()
+    assert result.status == "truncated" and result.stop_reason == "runtime_budget"
+    assert result.pages == expected_pages
+    assert len(result.products) == expected_pages
+    retained = (
+        "1 item from 1 completed page" if expected_pages else "0 items from 0 completed pages"
+    )
+    assert (
+        result.error
+        == f"Time limit reached (10 seconds). Retained {retained}; collection is incomplete."
+    )
+
+
+async def test_runtime_expiry_between_pages_does_not_start_another_navigation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(amazon, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    second = URL + "&page=2"
+    page = FakePage({URL: CATALOG + next_link(second), second: CATALOG})
+
+    async def progress(details: dict[str, Any]) -> None:
+        assert details["section_pages"] == {"rfy": 1}
+        clock.now = 10
+
+    result = await collect(page, "rfy", runtime_budget=10, progress=progress)
+    assert result.status == "truncated" and result.stop_reason == "runtime_budget"
+    assert result.elapsed_seconds == 10
+    assert result.pages == 1 and len(result.products) == 1
+    assert page.visited == [URL]
+
+
+async def test_exhaustive_search_traverses_every_page_past_both_configured_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(amazon, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    initial = queue_url("search", "adapter")
+    documents: dict[str, str | Exception] = {}
+    # Exceed even the old maximum configurable page limit, with a synthetic clock
+    # beyond the configured runtime after the first page. Every link is observed.
+    urls = [initial] + [initial + f"&page={index}" for index in range(2, 103)]
+    for index, url in enumerate(urls):
+        documents[url] = CATALOG.replace("B000000001", f"B{index:09d}") + (
+            next_link(urls[index + 1]) if index + 1 < len(urls) else ""
+        )
+    progress_pages = []
+
+    async def progress(details: dict[str, Any]) -> None:
+        assert details["exhaustive"] is True
+        progress_pages.append(details["pages"])
+        clock.now += 121
+
+    page = FakePage(documents)
+    result = await collect(
+        page,
+        "search",
+        "adapter",
+        page_budget=1,
+        runtime_budget=10,
+        exhaustive=False,  # Legacy callers cannot turn exhaustive search off.
+        progress=progress,
+    )
+    assert result.status == "complete" and result.stop_reason is None
+    assert result.exhaustive is True and result.elapsed_seconds == 102 * 121
+    assert result.pages == len(result.products) == 102
+    assert page.visited == urls and progress_pages == list(range(1, 103))
+
+
+@pytest.mark.parametrize("failure", ["cancel", "timeout", "repeated", "challenge"])
+async def test_exhaustive_search_still_obeys_page_and_operator_safeguards(failure: str) -> None:
+    initial = queue_url("search", "adapter")
+    second = initial + "&page=2"
+    documents = {
+        initial: CATALOG + next_link(initial if failure == "repeated" else second),
+        second: "<input id='captchacharacters'>" if failure == "challenge" else CATALOG,
+    }
+    page = FakePage(documents)
+    if failure == "timeout":
+        page.documents[second] = PlaywrightTimeoutError("private page details")
+
+    async def progress(_: dict[str, Any]) -> None:
+        if failure == "cancel":
+            raise CollectionCancelledError()
+
+    result = await collect(
+        page, "search", "adapter", page_budget=1, exhaustive=True, progress=progress
+    )
+    assert (
+        result.status
+        == {
+            "cancel": "cancelled",
+            "timeout": "partial",
+            "repeated": "partial",
+            "challenge": "needs_login",
+        }[failure]
+    )
+    assert result.stop_reason is None
+    assert result.pages == 1 and len(result.products) == 1
+
+
+async def test_exhaustive_page_load_has_a_timeout_even_without_a_total_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise the real asyncio cancellation, shortening only this page's ceiling.
+    original_wait_for = asyncio.wait_for
+    limits = []
+
+    async def fast_wait_for(awaitable: Any, timeout: float) -> Any:
+        limits.append(timeout)
+        return await original_wait_for(awaitable, timeout=0.01)
+
+    monkeypatch.setattr(amazon.asyncio, "wait_for", fast_wait_for)
+    cancelled = asyncio.Event()
+
+    class StalledPage(FakePage):
+        async def goto(self, url: str, **kwargs: Any) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    result = await collect(StalledPage({}), "search", "adapter", exhaustive=True)
+    assert limits == [60] and cancelled.is_set()
+    assert result.status == "failed" and result.stop_reason is None
+    assert result.error == "Page load failed (TimeoutError); no absence inferred."
 
 
 async def test_load_unrecognised_document_and_bounds() -> None:
@@ -296,6 +590,8 @@ async def test_load_unrecognised_document_and_bounds() -> None:
         await collect(page, "rfy", page_budget=0)
     with pytest.raises(ValueError):
         await collect(page, "rfy", runtime_budget=1)
+    with pytest.raises(ValueError):
+        await collect(page, "reviews", exhaustive=True)
     assert (await collect(page, "rfy")).status == "failed"
     page.documents[REVIEW_URL] = TimeoutError()
     review = await collect(page, "reviews")

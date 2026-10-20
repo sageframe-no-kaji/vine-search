@@ -186,6 +186,7 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
         page: Annotated[int, Query(ge=1, le=10000)] = 1,
         limit: Annotated[int, Query(ge=1, le=100)] = 60,
         offset: Annotated[int, Query(ge=0, le=1000000)] = 0,
+        visibility: str = "visible",
     ) -> Json:
         return db.list_products(
             query=query or q,
@@ -198,7 +199,30 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
             freshness_hours=freshness_hours,
             limit=limit,
             offset=offset or (page - 1) * limit,
+            visibility=visibility,
         )
+
+    def change_visibility(resource: str, data: Json, record_id: int | None = None) -> Json:
+        allowed = {"hidden", "ids"} if record_id is None else {"hidden"}
+        if set(data) != allowed:
+            raise ValueError("Provide only hidden and, for a selection, ids")
+        return db.set_visibility(
+            resource, data["ids"] if record_id is None else [record_id], data["hidden"]
+        )
+
+    @app.patch("/api/products/{product_id}/visibility")
+    def product_visibility(product_id: int, data: Json) -> Json:
+        return change_visibility("products", data, product_id)
+
+    @app.post("/api/products/visibility")
+    def products_visibility(data: Json) -> Json:
+        return change_visibility("products", data)
+
+    @app.post("/api/products/{product_id}/details", status_code=202)
+    def product_details(product_id: int, data: Json | None = None) -> Json:
+        if data:
+            raise ValueError("Product details use the saved item; do not provide a URL or locator")
+        return db.enqueue_product_details(product_id)
 
     @app.get("/api/trackers")
     def trackers() -> list[Json]:
@@ -266,6 +290,9 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
         source: str = "",
         sort: str = "oldest",
         page: Annotated[int, Query(ge=1, le=10000)] = 1,
+        visibility: str = "visible",
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        offset: Annotated[int, Query(ge=0, le=1000000)] = 0,
     ) -> Json:
         return db.list_reviews(
             query=query or q,
@@ -273,8 +300,18 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
             local_progress=local_progress,
             source=source,
             sort=sort,
-            offset=(page - 1) * 100,
+            offset=offset or (page - 1) * limit,
+            limit=limit,
+            visibility=visibility,
         )
+
+    @app.patch("/api/reviews/{review_id}/visibility")
+    def review_visibility(review_id: int, data: Json) -> Json:
+        return change_visibility("reviews", data, review_id)
+
+    @app.post("/api/reviews/visibility")
+    def reviews_visibility(data: Json) -> Json:
+        return change_visibility("reviews", data)
 
     @app.patch("/api/reviews/{review_id}")
     def review_progress(review_id: int, data: Json) -> Json:
@@ -465,10 +502,17 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
 
     @app.get("/api/products/{product_id}/image")
     async def product_image(product_id: int) -> Response:
+        return await listing_image(db.get_product(product_id))
+
+    @app.get("/api/reviews/{review_id}/image")
+    async def review_image(review_id: int) -> Response:
+        return await listing_image(db.get_review(review_id))
+
+    async def listing_image(record: Json) -> Response:
         settings = db.get_settings()
         if settings.get("image_mode") == "hidden":
             raise HTTPException(404, "Images are disabled.")
-        url = str(db.get_product(product_id).get("image_url") or "")
+        url = str(record.get("image_url") or "")
         if not image_url_allowed(url):
             raise HTTPException(404, "No supported product image.")
         directory = cfg.data_dir / "image-cache"
@@ -514,6 +558,7 @@ def create_app(config: Config | None = None, store: Store | None = None) -> Fast
     @app.get("/trackers", response_class=HTMLResponse)
     @app.get("/reviews", response_class=HTMLResponse)
     @app.get("/settings", response_class=HTMLResponse)
+    @app.get("/help", response_class=HTMLResponse)
     @app.get("/activity", response_class=HTMLResponse)
     def index(request: Request) -> Response:
         return templates.TemplateResponse(

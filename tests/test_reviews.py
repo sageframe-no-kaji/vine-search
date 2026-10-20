@@ -113,6 +113,31 @@ def test_import_cannot_replace_current_amazon_truth(store: Store) -> None:
     assert store.list_reviews()["items"][0]["observed_status"] == "Reviewed"
 
 
+def test_amazon_source_filter_groups_sections_without_changing_provenance(store: Store) -> None:
+    sources = ["amazon", "amazon:awaiting_review", "amazon:reviewed", "amazon-other"]
+    sync(
+        store,
+        [
+            review(external_id=f"source-{index}", source=source)
+            for index, source in enumerate(sources)
+        ],
+    )
+    imported = [review(external_id="imported-order")]
+    preview = store.preview_review_import(imported)
+    store.import_reviews(imported, preview_hash=preview["preview_hash"])
+    observed = store.list_reviews(source="AMAZON")
+    assert observed["total"] == 3
+    assert {row["source"] for row in observed["items"]} == set(sources[:3])
+    assert store.list_reviews(source="amazon:reviewed")["total"] == 1
+    assert store.list_reviews(source="import")["total"] == 1
+    hidden_id = next(row["id"] for row in observed["items"] if row["source"] == "amazon:reviewed")
+    store.set_visibility("reviews", [hidden_id], True)
+    assert store.list_reviews(source="amazon")["total"] == 2
+    assert store.list_reviews(source="amazon", visibility="hidden")["total"] == 1
+    assert store.list_reviews(source="amazon", visibility="all", limit=1, offset=1)["total"] == 3
+    assert Store(store.path).get_review(hidden_id)["source"] == "amazon:reviewed"
+
+
 @pytest.mark.parametrize(
     "extra",
     [

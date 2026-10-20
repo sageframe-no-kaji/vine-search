@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -12,7 +13,14 @@ from fastapi.testclient import TestClient
 
 from test_amazon import CATALOG, REVIEW_URL, REVIEWS, URL, FakePage, next_link
 from test_login import FakeDesktop, FakeOwner
-from vine_search.amazon import review_sections
+from vine_search import amazon
+from vine_search.amazon import (
+    Scan,
+    parse_catalog,
+    parse_product_details,
+    queue_url,
+    review_sections,
+)
 from vine_search.collector import Collector, create_app
 from vine_search.login import BrowserOwner, LoginController
 from vine_search.store import Store
@@ -57,8 +65,61 @@ async def test_collector_honors_queued_snapshot_budget(tmp_path: Path) -> None:
     assert claimed
     result = await worker.execute(claimed)
     assert result.status == "truncated" and result.pages == 1
-    assert worker.store.get_job(job["id"])["status"] == "truncated"
-    assert worker.store.list_runs()[0]["pages"] == 1
+    saved = worker.store.get_job(job["id"])
+    assert saved["status"] == "truncated"
+    assert saved["progress"]["pages"] == saved["progress"]["observed"] == 1
+    assert saved["progress"]["stop_reason"] == "page_budget"
+    assert saved["progress"]["section_pages"] == {"rfy": 1}
+    assert saved["progress"]["exhaustive"] is False
+    assert saved["progress"]["elapsed_seconds"] >= 0
+    run = worker.store.list_runs()[0]
+    assert run["pages"] == 1 and run["error"] == result.error
+
+
+@pytest.mark.parametrize("source", ["manual", "schedule"])
+async def test_all_searches_exhaust_pages_and_runtime_limits_with_unique_saved_count(
+    tmp_path: Path, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initial = queue_url("search", "adapter")
+    urls = [initial] + [initial + f"&page={index}" for index in range(2, 103)]
+    documents = {
+        url: CATALOG + (next_link(urls[index + 1]) if index + 1 < len(urls) else "")
+        for index, url in enumerate(urls)
+    }
+    # Advance only the collection clock; the real event loop/lease keep normal time.
+    ticks = iter(range(0, 1_000_000, 121))
+    monkeypatch.setattr(amazon, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    worker = make_worker(tmp_path, documents)
+    worker.store.set_connection("connected")
+    tracker = worker.store.save_tracker(
+        {"name": "Adapters", "query": "adapter", "schedule_enabled": True}
+    )
+    job = worker.store.enqueue_job(
+        "search",
+        query="adapter",
+        tracker_id=tracker["id"],
+        source=source,
+        payload={"page_budget": 1, "runtime_budget_seconds": 15, "exhaustive": False},
+    )
+    assert job["payload"]["exhaustive"] is True
+    # Simulate a pre-upgrade queued snapshot: dispatch must derive policy from kind.
+    with worker.store.connect(write=True) as db:
+        db.execute(
+            "UPDATE jobs SET payload=json_set(payload,'$.exhaustive',json('false')) WHERE id=?",
+            (job["id"],),
+        )
+    claimed = worker.store.claim_job(worker.worker_id)
+    assert claimed
+    assert claimed["payload"]["exhaustive"] is False
+    result = await worker.execute(claimed)
+    saved = worker.store.get_job(job["id"])
+    assert result.status == saved["status"] == "complete"
+    assert saved["progress"]["exhaustive"] is True
+    assert saved["progress"]["pages"] == 102
+    assert saved["progress"]["elapsed_seconds"] > 102 * 120
+    assert saved["progress"]["observed"] == saved["result"]["count"] == 1
+    assert saved["progress"]["stop_reason"] is None
+    assert worker.store.list_runs()[0]["pages"] == 102
 
 
 async def test_expired_login_pauses_jobs_without_erasing_history(tmp_path: Path) -> None:
@@ -98,8 +159,18 @@ async def test_browser_failure_is_sanitized_and_cancelled_job_never_opens_browse
 
 async def test_reviews_record_both_sources_and_actual_status(tmp_path: Path) -> None:
     sections = review_sections(REVIEWS, REVIEW_URL)
+    image = '<img src="https://m.media-amazon.com/images/I/synthetic-review.jpg">'
     worker = make_worker(
-        tmp_path, {REVIEW_URL: REVIEWS, **dict.fromkeys(sections.values(), REVIEWS)}
+        tmp_path,
+        {
+            REVIEW_URL: REVIEWS,
+            **{
+                url: REVIEWS.replace("synthetic-order", f"synthetic-{section}").replace(
+                    "Network switch</a>", "Network switch</a>" + image
+                )
+                for section, url in sections.items()
+            },
+        },
     )
     worker.store.set_connection("connected")
     worker.store.enqueue_job("reviews")
@@ -108,8 +179,136 @@ async def test_reviews_record_both_sources_and_actual_status(tmp_path: Path) -> 
     result = await worker.execute(claimed)
     assert result.status == "complete" and result.pages == 2
     records = worker.store.list_reviews()["items"]
+    assert {record["source"] for record in records} == {"amazon:awaiting_review", "amazon:reviewed"}
+    assert all(
+        record["image_url"] == "https://m.media-amazon.com/images/I/synthetic-review.jpg"
+        for record in records
+    )
     assert records[0]["observed_status"] == "Pending approval"
     assert records[0]["local_progress"] == "not_started"
+
+
+async def test_partial_review_run_persists_reason_and_both_section_page_counts(
+    tmp_path: Path,
+) -> None:
+    sections = review_sections(REVIEWS, REVIEW_URL)
+    worker = make_worker(
+        tmp_path,
+        {
+            REVIEW_URL: REVIEWS,
+            **{url: REVIEWS + next_link(url + "&page=2") for url in sections.values()},
+        },
+    )
+    worker.store.set_connection("connected")
+    job = worker.store.enqueue_job("reviews", payload={"review_page_budget": 2})
+    claimed = worker.store.claim_job(worker.worker_id)
+    assert claimed
+    result = await worker.execute(claimed)
+    saved = worker.store.get_job(job["id"])
+    assert result.status == saved["status"] == "truncated"
+    assert saved["progress"]["stop_reason"] == "page_budget"
+    assert saved["progress"]["section_pages"] == {"awaiting_review": 1, "reviewed": 1}
+    assert saved["progress"]["pages"] == saved["progress"]["observed"] == 2
+    assert saved["error"] == worker.store.list_runs()[0]["error"] == result.error
+
+
+async def test_runtime_budget_without_captured_page_does_not_claim_fresh_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = make_worker(tmp_path, {})
+    worker.store.set_connection("connected", message="Previously verified")
+    before = worker.store.get_connection()
+    worker.store.enqueue_job("rfy")
+    claimed = worker.store.claim_job(worker.worker_id)
+    assert claimed
+    monkeypatch.setattr(
+        "vine_search.collector.collect",
+        AsyncMock(return_value=Scan("truncated", stop_reason="runtime_budget")),
+    )
+    await worker.execute(claimed)
+    assert worker.store.get_connection() == before
+
+
+@pytest.mark.parametrize("kind", ["rfy", "reviews", "details"])
+async def test_cancel_between_final_status_check_and_commit_retains_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    sections = review_sections(REVIEWS, REVIEW_URL)
+    worker = make_worker(
+        tmp_path,
+        {URL: CATALOG, REVIEW_URL: REVIEWS, **dict.fromkeys(sections.values(), REVIEWS)},
+    )
+    worker.store.set_connection("connected", message="Previously verified")
+    before_connection = worker.store.get_connection()
+    if kind == "details":
+        seed = worker.store.enqueue_job("rfy")
+        worker.store.record_scan(seed["id"], parse_catalog(CATALOG, URL).products)
+        product = worker.store.list_products()["items"][0]
+        job = worker.store.enqueue_product_details(product["id"])
+        details = parse_product_details(
+            '<h2>Product Details</h2><a href="/dp/B000000001">Adapter</a>'
+            "<div>Estimated Taxable Value: $9.89</div>",
+            product,
+            product_id=product["id"],
+        )
+        monkeypatch.setattr(
+            "vine_search.collector.lookup_details",
+            AsyncMock(return_value=Scan("complete", pages=1, details=details)),
+        )
+        method = "update_job"
+    else:
+        job = worker.store.enqueue_job(kind)
+        method = "record_review_scan" if kind == "reviews" else "record_scan"
+    before_runs = len(worker.store.list_runs())
+    claimed = worker.store.claim_job(worker.worker_id)
+    assert claimed
+    original_save = getattr(worker.store, method)
+    original_update = worker.store.update_job
+    saved_statuses = []
+
+    def cancel_then_save(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("status"):
+            saved_statuses.append(kwargs["status"])
+            if len(saved_statuses) == 1:
+                original_update(job["id"], status="cancelled")
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(worker.store, method, cancel_then_save)
+    result = await worker.execute(claimed)
+    saved = worker.store.get_job(job["id"])
+    assert result.status == saved["status"] == "cancelled"
+    assert saved_statuses == ["complete", "cancelled"]
+    assert worker.store.get_connection() == before_connection
+    assert saved["progress"]["stop_reason"] is None
+    if kind == "details":
+        assert saved["result"]["etv"] == "$9.89"
+        assert len(worker.store.list_runs()) == before_runs
+    else:
+        assert len(worker.store.list_runs()) == before_runs + 1
+        assert worker.store.list_runs()[0]["status"] == "cancelled"
+        assert worker.store.list_runs()[0]["observed_count"] == (2 if kind == "reviews" else 1)
+
+
+async def test_non_cancellation_commit_failure_is_not_retried_or_reclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker = make_worker(tmp_path, {URL: CATALOG})
+    worker.store.set_connection("connected")
+    worker.store.enqueue_job("rfy")
+    claimed = worker.store.claim_job(worker.worker_id)
+    assert claimed
+    calls = 0
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        raise ValueError("Invalid captured record")
+
+    monkeypatch.setattr(worker.store, "record_scan", fail)
+    with pytest.raises(ValueError, match="Invalid captured record"):
+        await worker.execute(claimed)
+    assert calls == 1
+    assert worker.store.get_job(claimed["id"])["status"] == "running"
 
 
 async def test_connection_check_proves_page_not_profile_existence(tmp_path: Path) -> None:

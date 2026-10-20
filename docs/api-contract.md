@@ -2,6 +2,109 @@
 
 All times are UTC ISO 8601 strings. `Store(db_path)` initializes/migrates SQLite and uses a fresh connection per operation. Public methods return JSON-compatible dictionaries/lists. Bad input raises `ValueError`; missing identities raise `KeyError`. Each product is identified by `marketplace` (default `amazon.com`) plus observed `asin` (10 uppercase alphanumerics). Listing URLs are constrained to Amazon; image URLs to Amazon image hosts.
 
+## Local visibility and review thumbnails — schema 3
+
+`list_products` and `list_reviews` accept `visibility='visible'|'hidden'|'all'`,
+defaulting to `visible`; the corresponding GET APIs accept the same query parameter.
+Items expose `hidden: boolean` and `hidden_at: UTC string|null`. List totals and
+review status counts respect the selected visibility. Dashboard product/review
+counts show visible records and expose separate `products_hidden`/`reviews_hidden`
+counts. Coverage continues to describe actual collection runs.
+
+`Store.set_visibility(resource, ids, hidden)` accepts resource `products` or
+`reviews`, 1–200 distinct positive integer IDs, and a Boolean `hidden`. It returns
+`{ids,hidden,updated}` and commits the whole selection atomically; a missing record
+rejects the entire operation. Repeating the same action is safe. Hiding changes
+only local visibility and its timestamp, preserves identity/history/status/progress,
+and survives subsequent collection or imports. Product and review visibility are
+independent; hiding a discovery product does not hide its review obligation, and
+review reminders continue to follow the underlying obligation and local progress.
+`updated` counts records whose visibility actually changed; repeating the same
+action returns zero and preserves the original hidden timestamp.
+
+Protected HTTP writes:
+
+- `PATCH /api/products/{id}/visibility` or `/api/reviews/{id}/visibility`,
+  body `{hidden: boolean}`.
+- `POST /api/products/visibility` or `/api/reviews/visibility`,
+  body `{ids: [integer,...], hidden: boolean}`.
+- Unknown body fields, invalid visibility values, invalid IDs, duplicates and
+  oversized batches return 422; a missing ID returns 404 without partial changes.
+
+Review rows expose a validated observed product-thumbnail `image_url`, with a
+same-marketplace/ASIN discovery-image fallback when no review thumbnail is known.
+`GET /api/reviews/{id}/image` shares the product image proxy's Amazon CDN allowlist,
+bounded cache/downloads, no-redirect fetch and image privacy setting. Imported
+photos/media and thumbnail URLs remain outside the import whitelist. Schema 2
+records migrate as visible, retaining their existing data and local progress;
+schema 1 also follows its existing alert-history migration before schema 3.
+The reviews GET API accepts `limit` (1–500, default 100), `offset` (0–1,000,000),
+and the existing one-based `page` alternative.
+
+Every `kind='search'` job persists `payload.exhaustive=true`, derived from the job
+kind after payload validation. Manual and scheduled searches both follow every
+exposed result page without total page or runtime budgets. The collector and
+collection entry point enforce this policy even for older queued snapshots or a
+caller-supplied `exhaustive=false`. Manual and scheduled requests retain separate
+queue identities because scheduled jobs respect schedule pause gates. The legacy
+tracker `page_budget` remains readable and validated for compatibility but the
+scheduler does not apply it to searches; budget values in search snapshots are
+inert. RFY/AFA queue collection and review sync keep their own page/time limits.
+Authentication, cancellation, unsafe navigation, repeated pages and per-page load
+failures still terminate searches with truthful coverage, and browser ownership
+remains serial.
+Parsed review section `source` values are preserved, with the scan's `source`
+argument used only as the fallback. The reviews `source=amazon` filter includes
+both legacy `amazon` records and observed `amazon:*` sections; an explicit section
+value filters exactly that section. Returned rows retain their observed source.
+
+## Read-only Vine product details
+
+`Store.enqueue_product_details(product_id)` and protected
+`POST /api/products/{id}/details` create a durable `kind='details'` job and return
+the job directly (HTTP 202). The HTTP request has no body or `{}`; caller URLs,
+locators and other body fields are rejected. Payload snapshots the saved
+`product_id`, `asin` and observed `vine_url`, restricted to an HTTPS Amazon
+`/vine/vine-items` page. A missing product returns 404; a product without an
+observed Vine listing page returns 422 with a refresh instruction. Pending/running
+details requests deduplicate by product ID, independently of catalog collection.
+
+The collector uses its existing serial owner, opens only that observed page,
+matches the stored ASIN and opens the actual See details control. It never clicks
+Request product. No generated deep link or unobserved Amazon endpoint is used.
+The UI polls `GET /api/jobs/{id}` and can cancel through the existing protected job
+cancel endpoint. Details jobs do not create collection runs or alter product
+sightings, membership, history or observed review status.
+
+A complete job's `result` contains:
+
+```json
+{
+  "product_id": 1,
+  "asin": "B000000001",
+  "state": "observed",
+  "title": "Observed product title",
+  "image_url": "https://m.media-amazon.com/observed-image.jpg",
+  "description": "Observed product description",
+  "etv": "$9.89",
+  "etv_label": "Estimated Taxable Value",
+  "variants": [{"name": "Color", "selected": "Blue", "options": ["Blue"]}],
+  "availability": null,
+  "observed_at": "2026-10-20T20:00:00+00:00",
+  "message": null
+}
+```
+
+This shape is illustrative, not live account data. Result `state` is `observed`
+or `unavailable`; absent/stale cards use `unavailable` with a message. Missing ETV
+is `null`, never an inferred zero. Authentication, collection errors and cancellation
+remain `needs_login`, `failed` and `cancelled` job statuses. Stored results are
+whitelisted and bounded, must match the requested product, and use the same image
+host validation as catalog metadata. The dialog can use the existing product
+image proxy; detail snapshots do not overwrite catalog images. Only product
+metadata is retained; raw modal HTML, account state and request/order controls
+are excluded.
+
 ## Collector / durable jobs
 
 - `enqueue_job(kind, *, query='', tracker_id=None, source='manual', payload=None) -> job`. Kinds `rfy`, `afa`, `search`, `reviews`, `login`, `disconnect`; search requires query. Browser settings are snapshotted in payload. Duplicate queued/running scope returns existing job.

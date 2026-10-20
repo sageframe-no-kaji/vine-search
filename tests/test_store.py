@@ -261,7 +261,9 @@ def test_schedule_durable_scoped_and_snapshot_settings(store: Store) -> None:
     jobs = store.schedule_due(now=now)
     assert {j["kind"] for j in jobs} == {"rfy", "afa", "reviews", "search"}
     search = next(job for job in jobs if job["kind"] == "search")
-    assert search["tracker_id"] == tracker["id"] and search["payload"]["page_budget"] == 2
+    assert search["tracker_id"] == tracker["id"]
+    assert search["payload"]["exhaustive"] is True
+    assert search["payload"]["page_budget"] == 5  # Legacy tracker limit is not scheduled.
     assert Store(store.path).schedule_due(now=now + timedelta(minutes=1)) == []
     store.update_settings({"page_budget": 9})
     assert store.get_job(jobs[0]["id"])["payload"]["page_budget"] == 5
@@ -395,6 +397,6 @@ def test_v1_upgrade_preserves_products_and_notification_baseline(store: Store) -
     upgraded = Store(store.path)
     assert upgraded.list_products()["total"] == 1
     with upgraded.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
         assert db.execute("SELECT asin FROM alert_history").fetchone()[0] == "B000000001"
     assert upgraded.list_trackers()[0]["name"] == "Existing"
