@@ -37,6 +37,11 @@ capture time and source. Local progress is separate. Multiple orders can share a
 ASIN, and provisional identities remain explicit when Amazon supplies no order ID.
 Missing rows from incomplete review scans never imply review completion.
 
+Product and review visibility are independent local fields. Hiding a record
+does not erase its sightings, observed review status or local progress. Bulk
+visibility updates validate every requested identity before applying the batch.
+Review pictures use the same approved image hosts and privacy modes as products.
+
 ## Work ownership and recovery
 
 SQLite transactionally claims one leased browser job. The collector holds a
@@ -49,6 +54,19 @@ retries, while authentication failures require reconnect rather than repeated
 login attempts. Scheduled work respects the collection pause; pending manual
 requests remain visible. The notification worker runs independently of browser
 navigation so a slow Amazon page cannot block dashboard requests or delivery.
+
+Manual and scheduled Additional Items searches have no overall page or time
+cap. RFY/AFA queue collection and review sync retain their configured bounds. Individual navigation timeouts, repeated-page detection,
+authentication stops and cancellation remain active. Captured observations are
+committed when a scan terminates. A process crash before that commit can require
+retrying the job; this is not a per-page crash checkpoint.
+
+Read-only product-detail jobs use the saved ASIN and observed listing page. The
+collector finds that specific card, opens only its See details control, and
+extracts bounded text, variants, approved images and observed ETV. A missing ETV
+is null, not zero. Results must match the requested product or an explicitly
+observed selected child of a parent card. No request-product or ordering control
+is activated, and unavailable or changed layouts return explicit failure states.
 
 ## Connection
 

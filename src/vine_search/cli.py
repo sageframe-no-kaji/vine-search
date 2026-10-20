@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 import uvicorn
 
+from vine_search import __version__
 from vine_search.backup import create_backup, restore_backup
 from vine_search.config import Config
 
@@ -25,6 +26,7 @@ def setup(directory: Path = Path(".")) -> None:
     for name in ("app", "session", "backups"):
         (data / name).mkdir(parents=True, exist_ok=True, mode=0o700)
     contents = (
+        f"VINE_SEARCH_IMAGE=ghcr.io/sageframe-no-kaji/vine-search:{__version__}\n"
         "VINE_SEARCH_BIND=127.0.0.1\nVINE_SEARCH_PORT=8765\n"
         "VINE_SEARCH_DATA_DIR=./data/app\nVINE_SEARCH_SESSION_DIR=./data/session\n"
         f"VINE_SEARCH_COLLECTOR_SECRET={secrets.token_urlsafe(48)}\n"

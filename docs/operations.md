@@ -7,6 +7,9 @@ run `sh docker/install.sh` from that directory. It uses the published image for
 configuration creation and both runtime roles, so the host needs Docker and
 Compose without Python or a developer checkout. The bundle includes the Chromium
 security profile required by Compose. Keep those files together when updating.
+An existing .env image selection is preserved. An explicit VINE_SEARCH_IMAGE
+override is saved atomically so subsequent Compose commands use the same image;
+other settings remain unchanged.
 
 ## Local source build
 
@@ -84,12 +87,22 @@ because the application allowlist sees the proxy's connection address.
 
 ## Settings and schedules
 
-Settings changes persist immediately; newly queued work uses the updated
+Settings changes persist when saved; newly queued work uses the updated
 collection configuration. RFY and AFA default to 15-minute polling with five-page,
 120-second budgets. Review sync defaults to hourly with a ten-page budget.
-Trackers have separate live queries, enablement, intervals and page budgets.
+Trackers have separate live queries, enablement and intervals.
 Their phrase mode, exclusions, category restrictions, weights and freshness
 thresholds determine actual ranked results.
+
+Manual and scheduled searches traverse every result page Amazon exposes without
+a page or total-time limit. Each navigation still has a timeout.
+Cancel a long search in Activity; completed observations remain in history.
+Login, queue collection, search, review sync and product-detail lookups share
+one browser owner. Waiting work is visible in Activity, and the dashboard
+remains usable while the browser is busy.
+
+Use Help in the app for tracker examples, matching and score rules, schedule
+setup, saved-draft behavior and notification instructions.
 
 Collection pause stops scheduled collection without discarding queued work.
 Manual collection and live-search requests remain visible in Activity.
@@ -165,8 +178,15 @@ the original project. Never run both collectors against the same session volume.
 
 ## Updating and rollback
 
-Take a private backup before an update. Select the intended version in
-`VINE_SEARCH_IMAGE`, pull it, and recreate the services:
+Take a private backup before an update. With the new installation bundle, select
+the intended version explicitly; the installer persists it in .env before startup:
+
+```sh
+VINE_SEARCH_IMAGE=ghcr.io/sageframe-no-kaji/vine-search:0.1.1 sh docker/install.sh
+```
+
+An immutable `@sha256:` reference can replace the version tag. Alternatively,
+edit `VINE_SEARCH_IMAGE` in .env yourself, then pull and recreate the services:
 
 ```sh
 docker compose pull
@@ -190,6 +210,9 @@ explicitly deletes the volumes and is not an update or normal uninstall command.
 | Saved results work but login fails | Check collector health and logs; reopen the login browser. |
 | Needs login / challenge | Complete the normal Amazon flow; background work waits. |
 | Empty live search | Inspect its run status and pages; empty, partial, failed and truncated differ. |
+| Results collected but none shown | Clear the local tracker, freshness, score and visibility filters. Live search has a fixed Additional Items source. |
+| Tracker does not save | Read the inline error; provide a name, valid numeric ranges, and an Amazon query when scheduling is enabled. Failed submissions retain entered fields. |
+| Vine details unavailable | The item may have moved or disappeared since collection. Run a fresh search, then retry its details; Open product still opens the ordinary product page. |
 | Layout changed | Preserve history and report sanitized structure; do not repeatedly retry challenges. |
 | Notification failure | Check the masked destination configuration and Activity; retry is bounded. |
 | Host rejected | Add the exact private host/IP to `VINE_SEARCH_ALLOWED_HOSTS`. |
@@ -200,3 +223,30 @@ Logs contain operational state rather than page captures or credentials:
 `docker compose logs --tail=100 web collector`. Do not include `.env`, session
 files, full inventory exports, raw account HTML or private backup archives in
 public issue reports.
+
+## Live verification
+
+Verify a running installation through its dashboard URL so the verifier shares
+the normal durable queue and does not compete for the collector's profile:
+
+```sh
+uv run python -m vine_search.verify --mode live --url http://127.0.0.1:8765 \
+  --wait-seconds 1800 --report data/live-verification.json
+```
+
+Use the reachable private or tunneled URL for a remote server. This command
+queues RFY, AFA, a manual USB search, and review sync, then checks their recorded
+scope, state and page counts. It records sanitized counts and version metadata;
+it does not export credentials or inventory. The account must already be
+connected, and a demonstration installation cannot pass as live evidence.
+
+The USB search must finish without a page or total-time limit. Bounded RFY/AFA and
+review runs can establish compatibility while reporting incomplete coverage;
+their successful verification does not claim a complete catalog or review list.
+The command's wait limit only limits how long verification waits. If it expires,
+the queued work remains visible in Activity and is not automatically cancelled.
+
+The mode without `--url` opens the dedicated profile directly and requires the
+collector to be stopped. It is intended for standalone diagnosis, not a second
+browser owner alongside a running installation. Keep reports and any captures
+private unless they have been inspected and sanitized.

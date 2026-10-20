@@ -5,7 +5,7 @@ on:
       version:
         description: "Image version, matching the reviewed application version"
         required: true
-        default: "0.1.0"
+        default: "0.1.1"
 permissions:
   contents: read
 concurrency:

@@ -1,7 +1,7 @@
 name: vine-search
 
 x-common: &common
-  image: ${VINE_SEARCH_IMAGE:-ghcr.io/sageframe-no-kaji/vine-search:0.1.0}
+  image: ${VINE_SEARCH_IMAGE:-ghcr.io/sageframe-no-kaji/vine-search:0.1.1}
   init: true
   restart: unless-stopped
   user: "1000:1000"

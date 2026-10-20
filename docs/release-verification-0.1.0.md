@@ -87,8 +87,8 @@ dashboard and login-viewer WebSocket; forwarding-header spoofing also returned
 zero JavaScript errors at `2026-10-20T18:35:39+00:00`. It used disposable synthetic
 pages, a temporary profile and separate display/ports without accessing the
 installation's real session or restarting its services. These checks establish
-deployment and synthetic login behavior; actual Amazon authentication and
-collection remain unverified.
+deployment and synthetic login behavior. Subsequent actual Amazon evidence is
+recorded separately in the acceptance matrix and account evidence below.
 
 ## Acceptance matrix
 

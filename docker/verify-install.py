@@ -7,7 +7,7 @@ separate check; this script records exactly which locally available image ran.
 
 Example (use an unpacked release-assets directory, never a source checkout):
   python3 docker/verify-install.py --directory /tmp/vine-release \
-    --image ghcr.io/sageframe-no-kaji/vine-search:0.1.0 --port 18765
+    --image ghcr.io/sageframe-no-kaji/vine-search:0.1.1 --port 18765
 
 The two randomly named projects are removed without --volumes on completion.
 Their volumes and private backup remain available for inspection or recovery.
@@ -261,7 +261,7 @@ class InstallVerifier:
             "Fresh-install verification requires a directory without an existing .env.",
         )
         require(
-            not (self.directory / "src/vine_search").exists(),
+            not any((self.directory / "src").rglob("*.py")),
             "Use unpacked release assets, not a developer source checkout.",
         )
         require(
