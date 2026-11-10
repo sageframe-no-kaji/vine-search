@@ -8,6 +8,8 @@ from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from vine_search.config import AMAZON_HOSTS, MARKETPLACE, ORIGIN
+
 Json = dict[str, Any]
 DEFAULT_SETTINGS: Json = {
     "collection_enabled": True,
@@ -147,7 +149,7 @@ def safe_amazon_url(value: Any, *, image: bool = False) -> str:
             "images.amazon.com",
         }
         if image
-        else {"amazon.com", "www.amazon.com"}
+        else AMAZON_HOSTS
     )
     if (
         parsed.scheme != "https"
@@ -246,18 +248,16 @@ def clean_product(data: Json) -> Json:
     asin = text_value(data.get("asin", ""), "ASIN", 10).upper()
     if not re.fullmatch(r"[A-Z0-9]{10}", asin):
         raise ValueError("ASIN must contain 10 letters or digits")
-    if data.get("marketplace", "amazon.com") != "amazon.com":
-        raise ValueError("Only amazon.com is supported")
+    if data.get("marketplace", MARKETPLACE) != MARKETPLACE:
+        raise ValueError(f"Only {MARKETPLACE} is supported")
     return {
         "asin": asin,
-        "marketplace": "amazon.com",
+        "marketplace": MARKETPLACE,
         "title": text_value(data.get("title", ""), "title", 1000, empty=False),
         "category": text_value(data.get("category") or "", "category", 200),
         "variant": text_value(data.get("variant") or "", "variant", 500),
         "image_url": safe_amazon_url(data.get("image_url", ""), image=True),
-        "product_url": safe_amazon_url(
-            data.get("product_url") or f"https://www.amazon.com/dp/{asin}"
-        ),
+        "product_url": safe_amazon_url(data.get("product_url") or f"{ORIGIN}/dp/{asin}"),
         "vine_url": safe_amazon_url(data.get("vine_url", "")),
     }
 

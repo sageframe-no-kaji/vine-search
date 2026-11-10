@@ -23,6 +23,7 @@ services:
     environment:
       VINE_SEARCH_DATA_DIR: /data
       VINE_SEARCH_COLLECTOR_URL: http://collector:8766
+      VINE_SEARCH_MARKETPLACE: ${VINE_SEARCH_MARKETPLACE:-amazon.com}
       VINE_SEARCH_COLLECTOR_SECRET: ${VINE_SEARCH_COLLECTOR_SECRET:?Generate a private service secret in .env}
       VINE_SEARCH_BIND: 0.0.0.0
       VINE_SEARCH_PORT: 8765
@@ -51,6 +52,7 @@ services:
     environment:
       VINE_SEARCH_DATA_DIR: /data
       VINE_SEARCH_SESSION_DIR: /session
+      VINE_SEARCH_MARKETPLACE: ${VINE_SEARCH_MARKETPLACE:-amazon.com}
       VINE_SEARCH_COLLECTOR_SECRET: ${VINE_SEARCH_COLLECTOR_SECRET:?Generate a private service secret in .env}
     volumes:
       - data:/data

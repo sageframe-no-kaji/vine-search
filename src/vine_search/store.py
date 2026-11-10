@@ -11,8 +11,9 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
+from .amazon import vine_path
+from .config import MARKETPLACE, ORIGIN
 from .matching import normalized, rank_all, rank_product
 from .models import (
     DEFAULT_SETTINGS,
@@ -429,7 +430,7 @@ class Store:
                 db.execute("SELECT * FROM products WHERE id=?", (product_id,)).fetchone()
             )
             observed_url = safe_amazon_url(detail_product["vine_url"])
-            if not observed_url or urlparse(observed_url).path.rstrip("/") != "/vine/vine-items":
+            if not observed_url or vine_path(observed_url).rstrip("/") != "/vine/vine-items":
                 raise ValueError("Refresh this item in Discover before requesting Vine details")
         existing = db.execute(
             (
@@ -1090,9 +1091,9 @@ class Store:
             raise ValueError("Each review record must be an object")
         clean = {key: item[key] for key in REVIEW_FIELDS if key in item}
         clean["title"] = text_value(clean.get("title", ""), "title", 1000, empty=False)
-        clean["marketplace"] = clean.get("marketplace") or "amazon.com"
-        if clean["marketplace"] != "amazon.com":
-            raise ValueError("Only amazon.com is supported")
+        clean["marketplace"] = clean.get("marketplace") or MARKETPLACE
+        if clean["marketplace"] != MARKETPLACE:
+            raise ValueError(f"Only {MARKETPLACE} is supported")
         for key, maximum in (
             ("external_id", 200),
             ("variant", 500),
@@ -1117,7 +1118,7 @@ class Store:
                 date.fromisoformat(value)
             clean[key] = value
         clean["product_url"] = safe_amazon_url(
-            clean.get("product_url") or (f"https://www.amazon.com/dp/{asin}" if asin else "")
+            clean.get("product_url") or (f"{ORIGIN}/dp/{asin}" if asin else "")
         )
         clean["review_url"] = safe_amazon_url(clean.get("review_url", ""))
         # Only observed listing thumbnails are accepted, never imported media.
@@ -1133,7 +1134,7 @@ class Store:
         if imported:
             clean["source"] = "import"
         if clean["external_id"]:
-            clean["identity"] = "amazon.com:external:" + clean["external_id"]
+            clean["identity"] = f"{MARKETPLACE}:external:" + clean["external_id"]
             clean["identity_quality"] = "observed"
         else:
             identity_parts = [
@@ -1143,7 +1144,7 @@ class Store:
                 clean["order_date"],
             ]
             clean["identity"] = (
-                "amazon.com:provisional:"
+                f"{MARKETPLACE}:provisional:"
                 + hashlib.sha256(_dump(identity_parts).encode()).hexdigest()
             )
             clean["identity_quality"] = "provisional"
@@ -1518,6 +1519,10 @@ class Store:
                     "rejected",
                     "not approved",
                     "awaiting_review",
+                    "pas encore examiné",
+                    "en attente d'avis",
+                    "rejeté",
+                    "non approuvé",
                 }:
                     continue
                 age = record["age_days"]

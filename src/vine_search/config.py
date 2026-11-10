@@ -1,8 +1,16 @@
 """Deployment configuration, separate from editable product behavior."""
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Amazon storefront hosting the Vine account, e.g. amazon.com or amazon.fr.
+MARKETPLACE = os.getenv("VINE_SEARCH_MARKETPLACE", "amazon.com").strip().lower()
+if not re.fullmatch(r"amazon(\.[a-z]{2,3}){1,2}", MARKETPLACE):
+    raise ValueError("VINE_SEARCH_MARKETPLACE must look like amazon.com or amazon.fr")
+AMAZON_HOSTS = frozenset({MARKETPLACE, f"www.{MARKETPLACE}"})
+ORIGIN = f"https://www.{MARKETPLACE}"
 
 
 @dataclass(frozen=True)

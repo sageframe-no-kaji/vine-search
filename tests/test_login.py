@@ -207,7 +207,7 @@ async def test_explicit_auth_import_filters_domains_and_is_idempotent(
     with pytest.raises(ValueError, match="no browser cookies"):
         await owner._import_authorized_state(browser)
     source.write_text('{"cookies":[{"domain":"evil.example"}]}')
-    with pytest.raises(ValueError, match=r"no Amazon\.com cookies"):
+    with pytest.raises(ValueError, match=r"no amazon\.com cookies"):
         await owner._import_authorized_state(browser)
     monkeypatch.delenv("VINE_SEARCH_AUTH_FILE")
     await owner._import_authorized_state(browser)

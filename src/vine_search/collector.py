@@ -21,7 +21,6 @@ from websockets.asyncio.client import connect
 from websockets.typing import Subprotocol
 
 from vine_search.amazon import (
-    ORIGIN,
     CollectionCancelledError,
     Scan,
     collect,
@@ -29,6 +28,7 @@ from vine_search.amazon import (
     lookup_details,
     signed_in_vine,
 )
+from vine_search.config import ORIGIN
 from vine_search.login import BrowserOwner, LoginController, utc_now
 from vine_search.store import Store
 

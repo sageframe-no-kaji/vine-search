@@ -20,7 +20,8 @@ from typing import Any
 
 from playwright.async_api import BrowserContext, async_playwright
 
-from vine_search.amazon import ORIGIN, signed_in_vine
+from vine_search.amazon import signed_in_vine
+from vine_search.config import AMAZON_HOSTS, MARKETPLACE, ORIGIN
 
 
 def utc_now() -> str:
@@ -96,8 +97,7 @@ class BrowserOwner:
                     state["cookies"] = [
                         cookie
                         for cookie in state.get("cookies", [])
-                        if str(cookie.get("domain", "")).lstrip(".")
-                        in {"amazon.com", "www.amazon.com"}
+                        if str(cookie.get("domain", "")).lstrip(".") in AMAZON_HOSTS
                     ]
                     state["origins"] = []
                     staged = self.session_dir / "session-state.tmp"
@@ -124,10 +124,10 @@ class BrowserOwner:
         amazon_cookies = [
             cookie
             for cookie in cookies
-            if str(cookie.get("domain", "")).lstrip(".") in {"amazon.com", "www.amazon.com"}
+            if str(cookie.get("domain", "")).lstrip(".") in AMAZON_HOSTS
         ]
         if not amazon_cookies:
-            raise ValueError("Authorized state file has no Amazon.com cookies")
+            raise ValueError(f"Authorized state file has no {MARKETPLACE} cookies")
         await browser.add_cookies(amazon_cookies)
         marker.write_text(fingerprint)
         os.chmod(marker, 0o600)

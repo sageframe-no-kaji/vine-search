@@ -20,10 +20,26 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
+from vine_search.config import AMAZON_HOSTS, MARKETPLACE, ORIGIN
 from vine_search.models import clean_product_details
 
-ORIGIN = "https://www.amazon.com"
 ASIN = re.compile(r"^[A-Z0-9]{10}$")
+# Labels Amazon localizes. English (amazon.com) first, then French (amazon.fr).
+ETV_LABEL = (
+    r"Estimated\s+(?:Taxable|Tax)\s+Value"
+    r"|Valeur\s+(?:fiscale\s+)?estim[ée]e(?:\s+du\s+produit)?"
+)
+ETV_AMOUNT = (
+    r"(?:US\s*)?\$\s*[\d,]+(?:\.\d{2})?"
+    r"|[\d\s\u202f\u00a0.]*\d,\d{2}\s*(?:€|EUR)|(?:€|EUR)\s*[\d\s\u202f\u00a0.,]*\d"
+)
+UNAVAILABLE = (
+    r"This item is no longer available|Currently unavailable|This product is no longer available"
+    r"|Actuellement indisponible|n.est plus disponible"
+)
+DETAILS_BUTTON = re.compile(r"^(?:See details|Voir les d[ée]tails)$", re.I)
+DETAILS_HEADING = re.compile(r"Product Details|D[ée]tails de l.article", re.I)
+EMPTY_TEXT = ("aucun", "0 résultat", "il n'y a pas")
 QUEUES = {"rfy": "potluck", "afa": "last_chance", "search": "encore"}
 PRODUCT_CARDS = ".vvp-item-tile"
 REVIEW_ROWS = "#vvp-reviews-table tbody tr, .vvp-reviews-table tbody tr"
@@ -72,7 +88,7 @@ def amazon_url(value: str, base: str = ORIGIN) -> str | None:
         parsed = urlparse(candidate)
         invalid = (
             parsed.scheme != "https"
-            or parsed.hostname not in {"amazon.com", "www.amazon.com"}
+            or parsed.hostname not in AMAZON_HOSTS
             or parsed.username
             or parsed.password
             or parsed.port not in {None, 443}
@@ -82,6 +98,11 @@ def amazon_url(value: str, base: str = ORIGIN) -> str | None:
     if invalid:
         return None
     return candidate
+
+
+def vine_path(url: str) -> str:
+    """URL path without Amazon's language prefix (/-/en/, /-/fr/) used on amazon.fr."""
+    return re.sub(r"^/-/[a-z]{2}(?:[_-][a-z]{2})?(?=/)", "", urlparse(url).path, flags=re.I)
 
 
 def image_url(value: str) -> str | None:
@@ -109,7 +130,7 @@ def queue_url(kind: str, query: str = "") -> str:
 
 def signed_in_vine(html: str, url: str) -> bool:
     """Require actual Amazon host, Vine path, and authenticated Vine content."""
-    if not amazon_url(url) or not urlparse(url).path.startswith("/vine/"):
+    if not amazon_url(url) or not vine_path(url).startswith("/vine/"):
         return False
     soup = BeautifulSoup(html, "html.parser")
     if _auth_state(soup, url):
@@ -128,7 +149,14 @@ def _auth_state(soup: BeautifulSoup, url: str) -> str | None:
     path = urlparse(url).path
     if soup.select_one("#captchacharacters, form[action*='validateCaptcha'], #cvf-page-content"):
         return "challenge"
-    if any(value in text for value in ("enter the characters you see", "solve this puzzle")):
+    if any(
+        value in text
+        for value in (
+            "enter the characters you see",
+            "solve this puzzle",
+            "saisissez les caractères",
+        )
+    ):
         return "challenge"
     if "/ap/" in path or soup.select_one("#ap_email, #ap_password, form[name='signIn']"):
         return "needs_login"
@@ -136,7 +164,7 @@ def _auth_state(soup: BeautifulSoup, url: str) -> str | None:
 
 
 def _page_state(soup: BeautifulSoup, url: str) -> str | None:
-    if not amazon_url(url) or not urlparse(url).path.startswith("/vine/"):
+    if not amazon_url(url) or not vine_path(url).startswith("/vine/"):
         return "needs_login" if _auth_state(soup, url) else "invalid_host"
     return _auth_state(soup, url)
 
@@ -152,7 +180,7 @@ def _next(soup: BeautifulSoup, url: str) -> str | None:
     if candidate is None:
         raise ValueError("Pagination left the Amazon Vine origin")
     old, new = urlparse(url), urlparse(candidate)
-    if old.path != new.path:
+    if vine_path(url) != vine_path(candidate):
         raise ValueError("Pagination changed the Vine section")
     old_query, new_query = parse_qs(old.query), parse_qs(new.query)
     for key in ("queue", "search", "review-type"):
@@ -164,8 +192,15 @@ def _next(soup: BeautifulSoup, url: str) -> str | None:
 def _count(soup: BeautifulSoup) -> int | None:
     node = soup.select_one("#vvp-items-grid-container, #vvp-items-grid, #vvp-reviews-table")
     text = (node.parent if node and node.parent else soup).get_text(" ", strip=True)
-    match = re.search(r"\bof\s+(?:over\s+)?([\d,]+)\s+(?:results|items|reviews)\b", text, re.I)
-    return int(match.group(1).replace(",", "")) if match else None
+    match = re.search(
+        r"\b(?:of|sur)\s+(?:over\s+|plus\s+de\s+)?(\d[\d,.\s\u202f\u00a0]*?)\s+"
+        r"(?:results|items|reviews|résultats|articles|avis)\b",
+        text,
+        re.I,
+    )
+    if match is None:
+        match = re.search(r"(\d[\d,.\s\u202f\u00a0]*?)\s+(?:item|article)\(s\)", text, re.I)
+    return int(re.sub(r"\D", "", match.group(1))) if match else None
 
 
 def _asin(node: Tag) -> str | None:
@@ -231,7 +266,7 @@ def parse_catalog(html: str, url: str) -> ParsedPage:
         products.append(
             {
                 "asin": asin,
-                "marketplace": "amazon.com",
+                "marketplace": MARKETPLACE,
                 "title": title,
                 "image_url": _product_image(card),
                 "product_url": f"{ORIGIN}/dp/{asin}",
@@ -250,6 +285,7 @@ def parse_catalog(html: str, url: str) -> ParsedPage:
                 "we couldn't find",
                 "there are no",
                 "0 results",
+                *EMPTY_TEXT,
             )
         )
         if not empty:
@@ -282,11 +318,18 @@ def review_sections(html: str, url: str) -> dict[str, str]:
     for link in soup.select("a[href]"):
         label = clean(link.get_text(" ", strip=True)).lower()
         href = amazon_url(str(link.get("href")), url)
-        if href is None or urlparse(href).path != "/vine/vine-reviews":
+        if href is None or vine_path(href) != "/vine/vine-reviews":
             continue
-        if "awaiting review" in label or "pending review" in label:
+        review_type = parse_qs(urlparse(href).query).get("review-type", [""])[0]
+        if review_type == "pending_review" or any(
+            value in label for value in ("awaiting review", "pending review")
+        ):
             result["awaiting_review"] = href
-        elif label == "reviewed" or re.fullmatch(r"reviewed\s*\([\d,]+\)", label):
+        elif (
+            review_type == "completed"
+            or label == "reviewed"
+            or re.fullmatch(r"reviewed\s*\([\d,]+\)", label)
+        ):
             result["reviewed"] = href
     return result
 
@@ -324,7 +367,15 @@ def parse_reviews(html: str, url: str, section: str) -> ParsedPage:
         asin = _asin(row)
         cells = row.select("td")
         date_node = row.select_one(".vvp-reviews-table--date-col, [data-order-date]")
-        order_date = _date(clean(date_node.get_text(" ", strip=True))) if date_node else None
+        stamp_node = row.select_one("[data-order-timestamp]")
+        stamp = str(stamp_node.get("data-order-timestamp", "")) if stamp_node else ""
+        order_date = (
+            datetime.fromtimestamp(int(stamp) / 1000, UTC).date().isoformat()
+            if stamp.isdigit()
+            else _date(clean(date_node.get_text(" ", strip=True)))
+            if date_node
+            else None
+        )
         if order_date is None:
             for cell in cells:
                 order_date = _date(cell.get_text(" ", strip=True))
@@ -334,9 +385,13 @@ def parse_reviews(html: str, url: str, section: str) -> ParsedPage:
         status = clean(status_node.get_text(" ", strip=True)) if status_node else ""
         if not status:
             for index, header in enumerate(headers):
-                if "status" in header and index < len(cells):
+                if ("status" in header or "statut" in header) and index < len(cells):
                     status = clean(cells[index].get_text(" ", strip=True))
                     break
+        text_cols = row.select(".vvp-reviews-table--text-col")
+        if not status and len(text_cols) > 2:
+            # amazon.fr: Produit / Date / Statut columns share one class.
+            status = clean(text_cols[2].get_text(" ", strip=True))
         # A tab is provenance. Only the awaiting tab itself proves awaiting status.
         if not status:
             status = "Awaiting Review" if section == "awaiting_review" else "unknown"
@@ -373,7 +428,14 @@ def parse_reviews(html: str, url: str, section: str) -> ParsedPage:
         )
     if not records and not any(
         phrase in soup.get_text(" ", strip=True).lower()
-        for phrase in ("no reviews", "no items", "no products", "there are no", "0 reviews")
+        for phrase in (
+            "no reviews",
+            "no items",
+            "no products",
+            "there are no",
+            "0 reviews",
+            *EMPTY_TEXT,
+        )
     ):
         return ParsedPage(
             "layout_changed", message="No readable review rows or explicit empty state."
@@ -391,7 +453,7 @@ def parse_reviews(html: str, url: str, section: str) -> ParsedPage:
 
 
 async def load_page(page: Any, url: str) -> tuple[str, str]:
-    if not amazon_url(url) or not urlparse(url).path.startswith("/vine/"):
+    if not amazon_url(url) or not vine_path(url).startswith("/vine/"):
         raise ValueError("Only observed Amazon Vine pages may be collected")
     await page.goto(url, wait_until="domcontentloaded", timeout=45_000)
     # Parse actual error documents when the expected selectors never appear.
@@ -428,11 +490,7 @@ def parse_product_details(html: str, product: dict[str, Any], *, product_id: int
         ),
         None,
     )
-    etv = re.search(
-        r"(Estimated\s+(?:Taxable|Tax)\s+Value)\s*:\s*((?:US\s*)?\$\s*[\d,]+(?:\.\d{2})?)",
-        text,
-        re.I,
-    )
+    etv = re.search(rf"({ETV_LABEL})\s*:\s*({ETV_AMOUNT})", text, re.I)
     descriptions = [
         clean(unescape(node.get_text(" ", strip=True)), 1500)
         for node in soup.select("ul li")
@@ -463,12 +521,7 @@ def parse_product_details(html: str, product: dict[str, Any], *, product_id: int
                 ],
             }
         )
-    unavailable = re.search(
-        r"(?:This item is no longer available|Currently unavailable|"
-        r"This product is no longer available)",
-        text,
-        re.I,
-    )
+    unavailable = re.search(UNAVAILABLE, text, re.I)
     if title_node is None and not (etv or descriptions or variants or unavailable):
         raise ValueError("The product details dialog has no readable product content")
     variant_message = ""
@@ -521,7 +574,7 @@ async def lookup_details(page: Any, payload: dict[str, Any], *, progress: Any = 
     if (
         not ASIN.fullmatch(asin)
         or not amazon_url(url)
-        or urlparse(url).path.rstrip("/") != "/vine/vine-items"
+        or vine_path(url).rstrip("/") != "/vine/vine-items"
     ):
         scan.error = "Product details require a saved Amazon Vine listing."
         return scan
@@ -579,13 +632,13 @@ async def lookup_details(page: Any, payload: dict[str, Any], *, progress: Any = 
                 str(node.get("data-is-parent-asin", "")).lower() == "true"
                 for node in (current_card, *current_card.select("[data-is-parent-asin]"))
             )
-            button = card.get_by_role("button", name=re.compile(r"^See details$", re.I))
+            button = card.get_by_role("button", name=DETAILS_BUTTON)
             if await button.count() != 1 or not await button.is_enabled():
                 scan.error = "The matching product has no available See details control."
                 return scan
             await report("opening_details")
             await button.click(timeout=10_000)
-            heading = re.compile(r"Product Details", re.I)
+            heading = DETAILS_HEADING
             await (
                 page.locator("[role='dialog']:visible, .a-popover:visible")
                 .filter(has_text=heading)
@@ -603,11 +656,7 @@ async def lookup_details(page: Any, payload: dict[str, Any], *, progress: Any = 
             # Missing ETV remains valid for a dialog requiring a variant selection.
             with contextlib.suppress(Exception):
                 await dialog.get_by_text(
-                    re.compile(
-                        r"Estimated\s+(?:Taxable|Tax)\s+Value\s*:\s*(?:US\s*)?\$\s*\d"
-                        r"|Currently unavailable|no longer available",
-                        re.I,
-                    )
+                    re.compile(rf"(?:{ETV_LABEL})\s*:\s*(?:{ETV_AMOUNT})|{UNAVAILABLE}", re.I)
                 ).first.wait_for(state="visible", timeout=10_000)
             current_html = await page.content()
             state = _page_state(BeautifulSoup(current_html, "html.parser"), str(page.url))

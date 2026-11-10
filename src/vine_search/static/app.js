@@ -151,7 +151,7 @@
     try {
       const url = new URL(value);
       return url.protocol === "https:" &&
-        ["amazon.com", "www.amazon.com"].includes(url.hostname) &&
+        /^(www\.)?amazon(\.[a-z]{2,3}){1,2}$/.test(url.hostname) &&
         !url.username &&
         !url.password
         ? url.href
