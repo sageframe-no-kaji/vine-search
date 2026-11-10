@@ -321,7 +321,13 @@ class LoginController:
                         )
                         while True:
                             for candidate in list(browser.pages):
-                                if signed_in_vine(await candidate.content(), str(candidate.url)):
+                                try:
+                                    html = await candidate.content()
+                                except Exception:
+                                    # Mid-navigation (sign-in redirects) or a closing
+                                    # tab; read it again on the next pass.
+                                    continue
+                                if signed_in_vine(html, str(candidate.url)):
                                     self.session.update(
                                         state="connected",
                                         message="Signed-in Amazon Vine access verified.",

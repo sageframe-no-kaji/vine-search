@@ -133,6 +133,27 @@ async def test_completion_requires_actual_host_and_vine_ui_and_closes_viewer(
     assert "capability" not in login.public()
 
 
+async def test_reading_a_navigating_page_does_not_end_login(tmp_path: Path) -> None:
+    """Sign-in redirects make page content briefly unreadable; keep polling."""
+    login, owner, _, _ = controller(tmp_path)
+    reads = 0
+
+    async def navigating_then_vine() -> str:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise RuntimeError("Unable to retrieve content because the page is navigating")
+        return "<div id='vvp-items-grid'>No items available</div>"
+
+    owner.page.url = f"{ORIGIN}/vine/vine-items"
+    owner.page.content = navigating_then_vine  # type: ignore[method-assign]
+    await login.start()
+    assert login.task
+    await asyncio.wait_for(login.task, timeout=3)
+    assert reads >= 2
+    assert login.public()["state"] == "connected"
+
+
 async def test_timeout_expires_capability_and_reconnect_gets_new_capability(tmp_path: Path) -> None:
     login, owner, states, desktop = controller(tmp_path, timeout=0.02)
     first = await login.start()
