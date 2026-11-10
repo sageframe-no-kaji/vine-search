@@ -1127,6 +1127,11 @@ textarea {
   font-size: 11px;
   color: var(--muted);
 }
+.language-picker select {
+  margin-left: 6px;
+  font: inherit;
+  color: inherit;
+}
 .toast {
   position: fixed;
   bottom: 22px;

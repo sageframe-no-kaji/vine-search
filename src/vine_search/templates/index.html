@@ -9,6 +9,9 @@
     <link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
     <link rel="stylesheet" href="/static/app.css?v={{ version }}" />
     <script src="/static/help.js?v={{ version }}" defer></script>
+    <script src="/static/locales/fr.js?v={{ version }}" defer></script>
+    <script src="/static/locales/fr.help.js?v={{ version }}" defer></script>
+    <script src="/static/i18n.js?v={{ version }}" defer></script>
     <script src="/static/app.js?v={{ version }}" defer></script>
   </head>
   <body>
@@ -62,7 +65,10 @@
       </main>
       <footer class="app-footer">
         <span>Private, self-hosted discovery</span
-        ><span>Observations are not a promise of availability.</span>
+        ><span>Observations are not a promise of availability.</span
+        ><label class="language-picker"
+          >Language <select id="language-select"></select
+        ></label>
       </footer>
     </div>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
