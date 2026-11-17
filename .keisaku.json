@@ -1,5 +1,5 @@
 {
-  "keisaku": 1,
+  "keisaku": 2,
   "works": [
     {
       "id": "vine-search",
@@ -27,16 +27,8 @@
       "tech_stack": "Python (fastapi, uvicorn, httpx, jinja2, pydantic, playwright, beautifulsoup4, python-multipart, python-dotenv, typer, websockets)",
       "created": "2026-10-20",
       "last_updated": "2026-10-20",
-      "headline": "No further runtime changes requested.",
-      "state": {
-        "stage": "dev",
-        "last": "Version 0.1.1 is running on Tenzo at http://127.0.0.1:18766 through the retained SSH tunnel. Source fc4eedd, immutable index1497e3b8; both roles healthy. Private backup, schema migration and exact data/settings preservation passed. Normal reconnect reused saved session. Live RFY/AFA, USB259/8complete, review92/10bounded and exact-item details passed. Three coherent runtime commits pushed;369tests95.63%, lint/types/fixtures and remote CI passed. Ho02/05complete.",
-        "next": "No further runtime changes requested. If full distribution completion resumes, finish fresh published0.1.1installer/recovery and AMD64audit, then refresh evidence/installation bundle. Ho04remains open for those checks. ARM64audit/source comparison completed; previous exact source bundle reused.",
-        "holdup": "Latest user direction: \"finish this. be conservcative. I just want the update running\". Both remaining agents exhausted quota; do not substitute fixture evidence for pending distribution checks. Original missing-tracker cause unconfirmed. External notifications and physical phone untested. Preserve current runtime/session/settings and do not stop the application SSH tunnel. Temporary GitHub route proxy can close after final evidence push.",
-        "as_of": "2026-10-20"
-      },
       "_keisaku": {
-        "generated_at": "2026-11-16T10:49:46",
+        "generated_at": "2026-11-17T15:26:31",
         "generator_version": "1",
         "sources": {
           "readme": "README.md",
@@ -64,8 +56,7 @@
             "python-dotenv",
             "typer",
             "websockets"
-          ],
-          "headline": "No further runtime changes requested."
+          ]
         },
         "contract_issues": []
       }
