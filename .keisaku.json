@@ -22,13 +22,13 @@
         "software"
       ],
       "status": "in-development",
-      "repo": "git@github-no-kaji:sageframe-no-kaji/vine-search.git",
+      "repo": "https://github.com/sageframe-no-kaji/vine-search",
       "license": "MIT",
       "tech_stack": "Python (fastapi, uvicorn, httpx, jinja2, pydantic, playwright, beautifulsoup4, python-multipart, python-dotenv, typer, websockets)",
       "created": "2026-10-20",
       "last_updated": "2026-10-20",
       "_keisaku": {
-        "generated_at": "2026-11-17T15:26:31",
+        "generated_at": "2026-11-24T17:07:24",
         "generator_version": "1",
         "sources": {
           "readme": "README.md",
